@@ -1,0 +1,17 @@
+[project]
+name = "beetle-traits"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Samuel Stevens", email = "samuel.robert.stevens@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+beetle-traits = "beetle_traits:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
