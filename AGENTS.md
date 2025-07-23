@@ -1,0 +1,1 @@
+- Tensor/array variables are suffixed with _[letters], where [letters] are individual letters representing dimensions. For instance, an activation tensor `x_hat` that represents P patches, each with dimension D, would be written as `x_hat_pd`.

@@ -1,7 +1,7 @@
 [project]
-name = "beetra"
+name = "btx"
 version = "0.1.0"
-description = "Add your description here"
+description = "Beetle trait extraction."
 readme = "README.md"
 authors = [
     { name = "Samuel Stevens", email = "samuel.robert.stevens@gmail.com" }
@@ -9,9 +9,14 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "beartype>=0.21.0",
+    "chex>=0.1.89",
     "equinox>=0.13.0",
+    "grain>=0.2.11",
     "jax[cuda12]>=0.7.0",
     "jaxtyping>=0.3.2",
+    "nvidia-dali-cuda120>=1.50.0",
+    "pillow>=11.3.0",
+    "polars>=1.31.0",
     "submitit>=1.5.3",
     "tyro>=0.9.26",
     "wandb>=0.21.0",

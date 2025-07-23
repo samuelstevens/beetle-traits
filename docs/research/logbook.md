@@ -45,3 +45,5 @@ What does this enable me to focus on?
 - Learning Jax's new NamedShard
 - Visualizing predictions (in wandb)
 - Writing a good dataloader for Hawaii
+
+Update: downloaded Hawaii data. Individual annotations are missing, and some group trait annotations are wrong. Asked both Mridul and Rayeed about both of these issues. See `notebooks/hawaii.py` for code.
