@@ -1,1 +1,3 @@
 - Tensor/array variables are suffixed with _[letters], where [letters] are individual letters representing dimensions. For instance, an activation tensor `x_hat` that represents P patches, each with dimension D, would be written as `x_hat_pd`.
+- Use `uv run SCRIPT.py` or `uv run python ARGS` to run python instead of Just plain `python`.
+- After making edits, run `uv run ruff format --preview .` to format the file, then run `uv run ruff check --fix .` to lint. Only do this if you think you're finished, or if you can't figure out a bug. Maybe linting will make it obvious. Don't fix lint errors in files you haven't modified.
