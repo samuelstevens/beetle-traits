@@ -53,16 +53,19 @@ individual_specimens/IMG_0109_specimen_3_MECKON_NEON.BET.D20.000026.png,group_im
 """
 
 import dataclasses
+import itertools
 import logging
 import pathlib
+import time
 
 import beartype
 import numpy as np
 import polars as pl
 import skimage.feature
+import submitit
 import tyro
 from jaxtyping import Float
-from PIL import Image
+from PIL import Image, ImageDraw
 
 import btx.helpers
 
@@ -74,10 +77,36 @@ logger = logging.getLogger("format_hawaii.py")
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
 class Config:
-    hf_root: pathlib.Path = pathlib.Path(
-        "/fs/scratch/PAS2136/samuelstevens/datasets/hawaii-beetles"
-    )
+    hf_root: pathlib.Path = pathlib.Path("./data/hawaii")
     """Where you dumped data when using download_hawaii.py."""
+
+    log_to: pathlib.Path = pathlib.Path("./logs")
+    """Where to save submitit/slurm logs."""
+
+    dump_to: pathlib.Path = pathlib.Path("./data/hawaii-formatted")
+    """Where to save formatted data."""
+
+    ignore_errors: bool = False
+    """Skip the user error check and always proceed (equivalent to answering 'yes')."""
+
+    seed: int = 42
+    """Random seed for sampling which annotations to save as examples."""
+
+    sample_rate: int = 20
+    """Save 1 in sample_rate annotations as example images (default: 1 in 20)."""
+
+    # Slurm configuration
+    slurm_acct: str = ""
+    """Slurm account to use. If empty, uses DebugExecutor."""
+
+    slurm_partition: str = "parallel"
+    """Slurm partition to use."""
+
+    n_hours: float = 4.0
+    """Number of hours to request for each job."""
+
+    groups_per_job: int = 10
+    """Number of group images to process per job."""
 
 
 @beartype.beartype
@@ -128,8 +157,8 @@ class ImageLoadError(WorkerError):
 class Annotation:
     group_img_basename: str
     beetle_position: int
-    group_img_abs_path: str
-    indiv_img_abs_path: str
+    group_img_abs_path: pathlib.Path
+    indiv_img_abs_path: pathlib.Path
     indiv_offset_px: tuple[float, float]
 
     @property
@@ -139,12 +168,175 @@ class Annotation:
 
 
 @beartype.beartype
+def save_example_images(
+    cfg: Config, annotation: Annotation, trait_df: pl.DataFrame
+) -> None:
+    """Save example images with annotations drawn on them."""
+    # Define colors for different trait types (RGB)
+    trait_colors = {
+        "coords_elytra_max_length": (0, 255, 0),  # Green
+        "coords_basal_pronotum_width": (0, 0, 255),  # Blue
+        "coords_elytra_max_width": (255, 255, 0),  # Yellow
+    }
+    # Get trait annotations for this specific beetle
+    trait_row = trait_df.filter(
+        (pl.col("GroupImgBasename") == annotation.group_img_basename)
+        & (pl.col("BeetlePosition") == annotation.beetle_position)
+    )
+
+    if trait_row.is_empty():
+        return
+
+    trait_data = trait_row.to_dicts()[0]
+
+    # Load images for drawing
+    try:
+        group_img_pil = Image.open(annotation.group_img_abs_path).convert("RGB")
+        indiv_img_pil = Image.open(annotation.indiv_img_abs_path).convert("RGB")
+    except Exception as e:
+        logger.warning(
+            "Failed to load images for example: %s beetle %d - %s",
+            annotation.group_img_basename,
+            annotation.beetle_position,
+            e,
+        )
+        return
+
+    # Get individual image dimensions
+    indiv_w, indiv_h = indiv_img_pil.size
+    x, y = annotation.indiv_offset_px
+
+    # Draw on group image
+    group_draw = ImageDraw.Draw(group_img_pil)
+
+    # Draw bounding box around individual beetle
+    group_draw.rectangle(
+        (x, y, x + indiv_w, y + indiv_h),
+        outline=(255, 0, 0),
+        width=12,
+    )
+
+    # Draw polylines for each trait type on group image
+    for trait_name, color in trait_colors.items():
+        if trait_name not in trait_data:
+            continue
+
+        coords = trait_data[trait_name]
+        if not coords:
+            continue
+
+        for polyline in coords:
+            if len(polyline) < 2:
+                continue
+
+            # Check that polyline has even number of coordinates (x,y pairs)
+            if len(polyline) % 2 != 0:
+                logger.warning(
+                    "Polyline for %s has odd number of coordinates (%d) for %s beetle %d. Skipping.",
+                    trait_name,
+                    len(polyline),
+                    annotation.group_img_basename,
+                    annotation.beetle_position,
+                )
+                continue
+
+            # Convert to list of tuples for PIL
+            points = list(itertools.batched(polyline, 2))
+            if len(points) < 2:
+                continue
+
+            group_draw.line(points, fill=color, width=8)
+
+    # Draw on individual image with adjusted coordinates
+    indiv_draw = ImageDraw.Draw(indiv_img_pil)
+
+    for trait_name, color in trait_colors.items():
+        if trait_name not in trait_data:
+            continue
+
+        coords = trait_data[trait_name]
+        if not coords:
+            continue
+
+        for polyline in coords:
+            if len(polyline) < 2:
+                continue
+
+            # Check that polyline has even number of coordinates (x,y pairs)
+            if len(polyline) % 2 != 0:
+                logger.warning(
+                    "Polyline for %s has odd number of coordinates (%d) for %s beetle %d. Skipping.",
+                    trait_name,
+                    len(polyline),
+                    annotation.group_img_basename,
+                    annotation.beetle_position,
+                )
+                continue
+
+            # Adjust coordinates relative to individual image
+            adjusted_points = [
+                (pt[0] - x, pt[1] - y) for pt in itertools.batched(polyline, 2)
+            ]
+
+            # Filter and warn about out-of-bounds points
+            valid_points = []
+            invalid_count = 0
+            for px, py in adjusted_points:
+                if 0 <= px < indiv_w and 0 <= py < indiv_h:
+                    valid_points.append((px, py))
+                else:
+                    invalid_count += 1
+
+            if invalid_count > 0:
+                logger.warning(
+                    "Found %d out-of-bounds points for %s on %s beetle %d (discarded from drawing)",
+                    invalid_count,
+                    trait_name,
+                    annotation.group_img_basename,
+                    annotation.beetle_position,
+                )
+
+            if len(valid_points) < 2:
+                continue
+
+            indiv_draw.line(valid_points, fill=color, width=3)
+
+    # Resize group image for viewing
+    group_w, group_h = group_img_pil.size
+    resized_group = group_img_pil.resize((group_w // 10, group_h // 10))
+
+    # Save images
+    examples_dir = cfg.dump_to / "random-examples"
+    group_path = (
+        examples_dir
+        / f"{annotation.group_img_basename}_beetle{annotation.beetle_position}_group.png"
+    )
+    indiv_path = (
+        examples_dir
+        / f"{annotation.group_img_basename}_beetle{annotation.beetle_position}_individual.png"
+    )
+
+    resized_group.save(group_path)
+    indiv_img_pil.save(indiv_path)
+
+    logger.info(
+        "Saved example images for %s beetle %d",
+        annotation.group_img_basename,
+        annotation.beetle_position,
+    )
+
+
+@beartype.beartype
 def worker_fn(
     cfg: Config, group_img_basenames: list[str]
 ) -> list[Annotation | WorkerError]:
     """Worker. Processing group_img_basenames and returns a list of annotations or errors."""
     img_df = load_img_df(cfg)
+    trait_df = load_trait_df(cfg)
     results = []
+
+    # Initialize random number generator for sampling
+    rng = np.random.default_rng(seed=cfg.seed)
 
     for group_img_basename in group_img_basenames:
         # Construct the group image path (need to uppercase the basename for filesystem)
@@ -196,16 +388,21 @@ def worker_fn(
                         "Empty correlation map - template may be larger than image"
                     )
 
-                iy, ix = np.unravel_index(np.argmax(corr), corr.shape)
-                offset_px = (int(ix), int(iy))
+                iy, ix, _ = np.unravel_index(np.argmax(corr), corr.shape)
+                offset_px = float(ix), float(iy)
 
                 annotation = Annotation(
-                    group_img_basename=group_img_basename,
-                    beetle_position=beetle_position,
-                    group_img_abs_path=str(group_img_abs_path),
-                    indiv_img_abs_path=str(indiv_img_abs_path),
-                    indiv_offset_px=offset_px,
+                    group_img_basename,
+                    beetle_position,
+                    group_img_abs_path,
+                    indiv_img_abs_path,
+                    offset_px,
                 )
+
+                # Save a random subset of annotations as example images
+                if rng.integers(0, cfg.sample_rate) == 0:
+                    save_example_images(cfg, annotation, trait_df)
+
                 results.append(annotation)
 
             except Exception as e:
@@ -217,7 +414,6 @@ def worker_fn(
                         indiv_img_path=str(indiv_img_abs_path),
                     )
                 )
-
     return results
 
 
@@ -330,8 +526,8 @@ def main(cfg: Config) -> int:
         if len(trait_not_in_img) > 10:
             logger.error("  ... and %d more", len(trait_not_in_img) - 10)
 
-    # Check that all image files exist
-    logger.info("Checking that all image files exist.")
+    # Check that image files exist
+    logger.info("Checking that image files exist.")
 
     # Get all unique file paths
     all_group_paths = set(img_df["groupImageFilePath"].unique().to_list())
@@ -375,8 +571,7 @@ def main(cfg: Config) -> int:
         if len(corrupted_files) > 10:
             logger.error("  ... and %d more", len(corrupted_files) - 10)
 
-    # Check dimensions for a sample of 100 group images
-    logger.info("Checking image dimensions for a sample of group images...")
+    logger.info("Checking image dimensions.")
 
     # Get unique group images with their corresponding individual images
     group_to_individuals = (
@@ -456,22 +651,181 @@ def main(cfg: Config) -> int:
             print(f"  - {error_type.replace('_', ' ').title()}: {count}")
 
         print("\n" + "=" * 60)
-        response = input(
-            "\nDo you want to continue with template matching despite these errors? (yes/no): "
-        )
-        if response.lower() not in ["yes", "y"]:
-            logger.info("Exiting.")
-            return 1
-        logger.info("Continuing.")
+
+        if cfg.ignore_errors:
+            logger.warning("Ignoring errors due to --ignore-errors flag. Continuing.")
+        else:
+            response = input(
+                "\nDo you want to continue with template matching despite these errors? (yes/no): "
+            )
+            if response.lower() not in ["yes", "y"]:
+                logger.info("Exiting.")
+                return 1
+            logger.info("Continuing.")
     else:
         logger.info("No data validation errors found.")
 
     logger.info("Ready for parallel processing implementation.")
 
-    # TODO: (future) run parallel jobs for template matching.
-    #
-    # TODO: check that len(annotations) = sum(individuals per group image x n group images)
-    # Don't error out. Just report an error.
+    # Create output directory for example images
+    examples_dir = cfg.dump_to / "random-examples"
+    examples_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("Example images will be saved to %s", examples_dir)
+
+    # Get all unique group images to process
+    all_group_basenames = trait_df.get_column("GroupImgBasename").unique().to_list()
+    logger.info("Found %d unique group images to process", len(all_group_basenames))
+
+    # Batch group images into chunks for each job
+    group_batches = list(
+        btx.helpers.batched_idx(len(all_group_basenames), cfg.groups_per_job)
+    )
+    logger.info(
+        "Will process %d group images in %d jobs (%d groups per job)",
+        len(all_group_basenames),
+        len(group_batches),
+        cfg.groups_per_job,
+    )
+
+    # Set up executor based on whether we're using Slurm
+    if cfg.slurm_acct:
+        # Calculate safe limits for Slurm
+        max_array_size = btx.helpers.get_slurm_max_array_size()
+        max_submit_jobs = btx.helpers.get_slurm_max_submit_jobs()
+
+        safe_array_size = min(int(max_array_size * 0.95), max_array_size - 2)
+        safe_array_size = max(1, safe_array_size)
+
+        safe_submit_jobs = min(int(max_submit_jobs * 0.95), max_submit_jobs - 2)
+        safe_submit_jobs = max(1, safe_submit_jobs)
+
+        logger.info(
+            "Using Slurm with safe limits - Array size: %d (max: %d), Submit jobs: %d (max: %d)",
+            safe_array_size,
+            max_array_size,
+            safe_submit_jobs,
+            max_submit_jobs,
+        )
+
+        executor = submitit.SlurmExecutor(folder=cfg.log_to)
+        executor.update_parameters(
+            time=int(cfg.n_hours * 60),  # Convert hours to minutes
+            partition=cfg.slurm_partition,
+            gpus_per_node=0,
+            ntasks_per_node=1,
+            cpus_per_task=4,  # Request 4 CPUs for memory
+            stderr_to_stdout=True,
+            account=cfg.slurm_acct,
+            array_parallelism=safe_array_size,
+        )
+    else:
+        logger.info("Using DebugExecutor for local execution")
+        executor = submitit.DebugExecutor(folder=cfg.log_to)
+        safe_array_size = len(group_batches)
+        safe_submit_jobs = len(group_batches)
+
+    # Submit jobs in batches to respect Slurm limits
+    all_jobs = []
+    job_batches = list(btx.helpers.batched_idx(len(group_batches), safe_array_size))
+
+    for batch_idx, (start, end) in enumerate(job_batches):
+        current_batches = group_batches[start:end]
+
+        # Check current job count and wait if needed (only for Slurm)
+        if cfg.slurm_acct:
+            current_jobs = btx.helpers.get_slurm_job_count()
+            jobs_available = max(0, safe_submit_jobs - current_jobs)
+
+            while jobs_available < len(current_batches):
+                logger.info(
+                    "Can only submit %d jobs but need %d. Waiting for jobs to complete...",
+                    jobs_available,
+                    len(current_batches),
+                )
+                time.sleep(60)  # Wait 1 minute
+                current_jobs = btx.helpers.get_slurm_job_count()
+                jobs_available = max(0, safe_submit_jobs - current_jobs)
+
+        logger.info(
+            "Submitting job batch %d/%d: jobs %d-%d",
+            batch_idx + 1,
+            len(job_batches),
+            start,
+            end - 1,
+        )
+
+        # Submit jobs for this batch
+        with executor.batch():
+            for group_start, group_end in current_batches:
+                group_batch = all_group_basenames[group_start:group_end]
+                job = executor.submit(worker_fn, cfg, group_batch)
+                all_jobs.append(job)
+
+        logger.info("Submitted job batch %d/%d", batch_idx + 1, len(job_batches))
+
+    logger.info("Submitted %d total jobs. Waiting for results...", len(all_jobs))
+
+    # Collect results and count annotations/errors
+    all_annotations = []
+    all_errors = []
+
+    for job_idx, job in enumerate(all_jobs):
+        try:
+            results = job.result()
+            for result in results:
+                if isinstance(result, WorkerError):
+                    all_errors.append(result)
+                else:
+                    all_annotations.append(result)
+            logger.info("Job %d/%d completed", job_idx + 1, len(all_jobs))
+        except Exception as e:
+            logger.error("Job %d/%d failed: %s", job_idx + 1, len(all_jobs), e)
+
+    # Report final statistics
+    logger.info("\n" + "=" * 60)
+    logger.info("PROCESSING COMPLETE")
+    logger.info("=" * 60)
+    logger.info("Total annotations: %d", len(all_annotations))
+    logger.info("Total errors: %d", len(all_errors))
+
+    if all_errors:
+        logger.info("\nError summary:")
+        error_types = {}
+        for error in all_errors:
+            error_type = type(error).__name__
+            error_types[error_type] = error_types.get(error_type, 0) + 1
+        for error_type, count in error_types.items():
+            logger.info("  %s: %d", error_type, count)
+
+    # Check expected vs actual annotation count
+    expected_count = sum(
+        len(img_df.filter(pl.col("GroupImgBasename") == gb))
+        for gb in all_group_basenames
+    )
+    logger.info("\nExpected annotations: %d", expected_count)
+    logger.info("Actual annotations: %d", len(all_annotations))
+    if expected_count != len(all_annotations) + len(all_errors):
+        logger.warning(
+            "Mismatch in annotation count! Missing: %d",
+            expected_count - len(all_annotations) - len(all_errors),
+        )
+
+    # Save annotations to disk
+    if all_annotations:
+        output_file = cfg.dump_to / "annotations.json"
+        logger.info("Saving annotations to %s", output_file)
+        # TODO: Save annotations with plenty of metadata.
+        # group_img_basename (str)
+        # beetle_position (int)
+        # group_img_rel_path (str)
+        # indiv_img_rel_path (str)
+        # indiv_img_abs_path (str)
+        # individual_id(str)
+        # origin_x, origin_y (int)  # crop top-left in group pixels
+        # ncc (float) # match quality
+        # measurement_type (str)  # elytra_max_length, elytra_max_width, basal_pronotum_width
+        # polyline_px (list[float]) # flattened [x1,y1,x2,y2,...] in INDIVIDUAL pixels
+
     return 0
 
 
