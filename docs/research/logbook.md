@@ -49,3 +49,14 @@ What does this enable me to focus on?
 Update: downloaded Hawaii data. Individual annotations are missing, and some group trait annotations are wrong. Asked both Mridul and Rayeed about both of these issues. See `notebooks/hawaii.py` for code.
 
 I plan on using `grain` and following this tutorial: https://google-grain.readthedocs.io/en/latest/tutorials/dataset_basic_tutorial.html
+
+# 08/12/2025
+
+Okay. I used match_template from skimage.feature to get individual annotations.
+All this information is calculated by:
+
+uv run src/btx/scripts/format_hawaii.py --ignore-errors --sample-rate 5 --hf-root /fs/scratch/PAS2136/samuelstevens/datasets/hawaii-beetles/ --slurm-acct PAS2136 --slurm-partition nextgen --n-hours 4
+
+And is saved to `data/hawaii-formatted/annotations.json`.
+
+Now we need to build a dataloader for this data.
