@@ -53,9 +53,12 @@ individual_specimens/IMG_0109_specimen_3_MECKON_NEON.BET.D20.000026.png,group_im
 """
 
 import dataclasses
+import gc
 import itertools
+import json
 import logging
 import pathlib
+import resource
 import time
 
 import beartype
@@ -64,14 +67,12 @@ import polars as pl
 import skimage.feature
 import submitit
 import tyro
-from jaxtyping import Float
+from jaxtyping import Float, UInt
 from PIL import Image, ImageDraw
 
 import btx.helpers
 
 log_format = "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
-logging.basicConfig(level=logging.INFO, format=log_format)
-logger = logging.getLogger("format_hawaii.py")
 
 
 @beartype.beartype
@@ -105,16 +106,25 @@ class Config:
     n_hours: float = 4.0
     """Number of hours to request for each job."""
 
-    groups_per_job: int = 10
+    groups_per_job: int = 4
     """Number of group images to process per job."""
 
 
 @beartype.beartype
 def img_as_arr(
     img: Image.Image | pathlib.Path,
-) -> Float[np.ndarray, "width height channels"]:
+) -> Float[np.ndarray, "height width channels"]:
     img = img if isinstance(img, Image.Image) else Image.open(img)
     return np.asarray(img, dtype=np.float32)
+
+
+@beartype.beartype
+def img_as_grayscale(
+    img: Image.Image | pathlib.Path,
+) -> UInt[np.ndarray, "height width"]:
+    img = img if isinstance(img, Image.Image) else Image.open(img)
+    # Convert to grayscale using PIL (more efficient than loading RGB then converting)
+    return np.asarray(img.convert("L"))
 
 
 @beartype.beartype
@@ -160,16 +170,29 @@ class Annotation:
     group_img_abs_path: pathlib.Path
     indiv_img_abs_path: pathlib.Path
     indiv_offset_px: tuple[float, float]
+    individual_id: str
+    ncc: float  # Normalized cross-correlation score from template matching
 
-    @property
-    def indiv_bbox_px(self) -> tuple[float, float, float, float]:
-        # Use indiv_img.size to figure out the lower right corner.
-        raise NotImplementedError()
+    def to_dict(self) -> dict:
+        """Convert annotation to dictionary for JSON serialization."""
+        return {
+            "group_img_basename": self.group_img_basename,
+            "beetle_position": self.beetle_position,
+            "group_img_rel_path": f"group_images/{self.group_img_basename.upper()}.png",
+            "indiv_img_rel_path": str(self.indiv_img_abs_path).split("/hawaii/")[-1]
+            if "/hawaii/" in str(self.indiv_img_abs_path)
+            else str(self.indiv_img_abs_path.name),
+            "indiv_img_abs_path": str(self.indiv_img_abs_path),
+            "individual_id": self.individual_id,
+            "origin_x": int(self.indiv_offset_px[0]),
+            "origin_y": int(self.indiv_offset_px[1]),
+            "ncc": self.ncc,
+        }
 
 
 @beartype.beartype
 def save_example_images(
-    cfg: Config, annotation: Annotation, trait_df: pl.DataFrame
+    dump_to: pathlib.Path, annotation: Annotation, trait_data: dict[str, object]
 ) -> None:
     """Save example images with annotations drawn on them."""
     # Define colors for different trait types (RGB)
@@ -178,16 +201,8 @@ def save_example_images(
         "coords_basal_pronotum_width": (0, 0, 255),  # Blue
         "coords_elytra_max_width": (255, 255, 0),  # Yellow
     }
-    # Get trait annotations for this specific beetle
-    trait_row = trait_df.filter(
-        (pl.col("GroupImgBasename") == annotation.group_img_basename)
-        & (pl.col("BeetlePosition") == annotation.beetle_position)
-    )
-
-    if trait_row.is_empty():
-        return
-
-    trait_data = trait_row.to_dicts()[0]
+    logging.basicConfig(level=logging.INFO, format=log_format)
+    logger = logging.getLogger("save-imgs")
 
     # Load images for drawing
     try:
@@ -306,7 +321,7 @@ def save_example_images(
     resized_group = group_img_pil.resize((group_w // 10, group_h // 10))
 
     # Save images
-    examples_dir = cfg.dump_to / "random-examples"
+    examples_dir = dump_to / "random-examples"
     group_path = (
         examples_dir
         / f"{annotation.group_img_basename}_beetle{annotation.beetle_position}_group.png"
@@ -327,27 +342,109 @@ def save_example_images(
 
 
 @beartype.beartype
+def get_memory_info() -> dict[str, float]:
+    """Get current memory usage information."""
+    try:
+        with open("/proc/meminfo", "r") as f:
+            lines = f.readlines()
+        meminfo = {}
+        for line in lines:
+            parts = line.split()
+            if len(parts) >= 2:
+                key = parts[0].rstrip(":")
+                value = int(parts[1])
+                meminfo[key] = value
+
+        mem_total_gb = meminfo.get("MemTotal", 0) / (1024 * 1024)
+        mem_available_gb = meminfo.get("MemAvailable", 0) / (1024 * 1024)
+        mem_free_gb = meminfo.get("MemFree", 0) / (1024 * 1024)
+
+        # Also get process-specific memory
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        process_mem_gb = usage.ru_maxrss / (1024 * 1024)  # Linux reports in KB
+
+        return {
+            "total_gb": round(mem_total_gb, 2),
+            "available_gb": round(mem_available_gb, 2),
+            "free_gb": round(mem_free_gb, 2),
+            "used_gb": round(mem_total_gb - mem_available_gb, 2),
+            "process_gb": round(process_mem_gb, 2),
+            "percent_used": round(
+                (mem_total_gb - mem_available_gb) / mem_total_gb * 100, 1
+            ),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@beartype.beartype
 def worker_fn(
     cfg: Config, group_img_basenames: list[str]
 ) -> list[Annotation | WorkerError]:
     """Worker. Processing group_img_basenames and returns a list of annotations or errors."""
+    logging.basicConfig(level=logging.DEBUG, format=log_format)
+    logger = logging.getLogger("worker")
+
+    # Log initial memory state
+    mem_info = get_memory_info()
+    logger.info(
+        "Starting worker with %d group images. Memory: %s",
+        len(group_img_basenames),
+        mem_info,
+    )
+
+    # Load dataframes
     img_df = load_img_df(cfg)
+    logger.info(
+        "Loaded img_df with %d rows. Memory: %s", len(img_df), get_memory_info()
+    )
+
     trait_df = load_trait_df(cfg)
+    logger.info(
+        "Loaded trait_df with %d rows. Memory: %s", len(trait_df), get_memory_info()
+    )
+
+    # Filter to only relevant data to save memory
+    logger.info("Filtering dataframes to relevant groups...")
+    img_df = img_df.filter(pl.col("GroupImgBasename").is_in(group_img_basenames))
+    trait_df = trait_df.filter(pl.col("GroupImgBasename").is_in(group_img_basenames))
+    logger.info(
+        "After filtering - img_df: %d rows, trait_df: %d rows. Memory: %s",
+        len(img_df),
+        len(trait_df),
+        get_memory_info(),
+    )
+
     results = []
 
     # Initialize random number generator for sampling
     rng = np.random.default_rng(seed=cfg.seed)
 
-    for group_img_basename in group_img_basenames:
+    for idx, group_img_basename in enumerate(group_img_basenames):
+        logger.info(
+            "Processing group %d/%d: %s. Memory before: %s",
+            idx + 1,
+            len(group_img_basenames),
+            group_img_basename,
+            get_memory_info(),
+        )
+
         # Construct the group image path (need to uppercase the basename for filesystem)
         group_img_abs_path = (
             cfg.hf_root / "group_images" / f"{group_img_basename.upper()}.png"
         )
 
-        # Load the group image
+        # Load the group image in grayscale for matching.
         try:
-            group_img = img_as_arr(group_img_abs_path)
+            group_img_gray = img_as_grayscale(group_img_abs_path)
+            logger.info(
+                "Loaded group image %s, gray shape: %s. Memory: %s",
+                group_img_basename,
+                group_img_gray.shape,
+                get_memory_info(),
+            )
         except Exception as e:
+            logger.error("Failed to load group image %s: %s", group_img_basename, e)
             results.append(
                 ImageLoadError(
                     group_img_basename=group_img_basename,
@@ -359,16 +456,32 @@ def worker_fn(
 
         # Find all individual images for this group image
         group_rows = img_df.filter(pl.col("GroupImgBasename") == group_img_basename)
+        logger.info(
+            "Found %d individual images for group %s",
+            len(group_rows),
+            group_img_basename,
+        )
 
         for row in group_rows.iter_rows(named=True):
             beetle_position = row["BeetlePosition"]
             indiv_img_rel_path = row["individualImageFilePath"]
             indiv_img_abs_path = cfg.hf_root / indiv_img_rel_path
 
-            # Load the individual image
+            # Load the individual image (grayscale for matching)
             try:
-                template = img_as_arr(indiv_img_abs_path)
+                template_gray = img_as_grayscale(indiv_img_abs_path)
+                logger.debug(
+                    "Loaded individual image for beetle %d, gray shape: %s. Memory: %s",
+                    beetle_position,
+                    template_gray.shape,
+                    get_memory_info(),
+                )
             except Exception as e:
+                logger.error(
+                    "Failed to load individual image for beetle %d: %s",
+                    beetle_position,
+                    e,
+                )
                 results.append(
                     ImageLoadError(
                         group_img_basename=group_img_basename,
@@ -378,30 +491,66 @@ def worker_fn(
                 )
                 continue
 
-            # Perform template matching
+            # Perform template matching (using grayscale images)
             try:
-                corr = skimage.feature.match_template(
-                    group_img, template, pad_input=False
+                logger.debug(
+                    "Starting template matching for beetle %d...", beetle_position
                 )
+                corr = skimage.feature.match_template(
+                    group_img_gray, template_gray, pad_input=False
+                )
+                logger.debug(
+                    "Template matching complete, corr shape: %s. Memory: %s",
+                    corr.shape,
+                    get_memory_info(),
+                )
+
                 if corr.size == 0:
                     raise ValueError(
                         "Empty correlation map - template may be larger than image"
                     )
 
-                iy, ix, _ = np.unravel_index(np.argmax(corr), corr.shape)
+                max_corr_idx = np.argmax(corr)
+                iy, ix = np.unravel_index(max_corr_idx, corr.shape)
                 offset_px = float(ix), float(iy)
 
+                # Get the normalized cross-correlation score at the best match
+                ncc_score = float(corr.flat[max_corr_idx])
+
+                # Clean up correlation matrix to free memory
+                del corr
+                del template_gray
+                gc.collect()
+
+                # Get individual ID from the row data
+                individual_id = row.get("individualID", "")
+
                 annotation = Annotation(
-                    group_img_basename,
-                    beetle_position,
-                    group_img_abs_path,
-                    indiv_img_abs_path,
-                    offset_px,
+                    group_img_basename=group_img_basename,
+                    beetle_position=beetle_position,
+                    group_img_abs_path=group_img_abs_path,
+                    indiv_img_abs_path=indiv_img_abs_path,
+                    indiv_offset_px=offset_px,
+                    individual_id=individual_id,
+                    ncc=ncc_score,
                 )
 
                 # Save a random subset of annotations as example images
                 if rng.integers(0, cfg.sample_rate) == 0:
-                    save_example_images(cfg, annotation, trait_df)
+                    trait_row = trait_df.filter(
+                        (pl.col("GroupImgBasename") == annotation.group_img_basename)
+                        & (pl.col("BeetlePosition") == annotation.beetle_position)
+                    )
+
+                    if not trait_row.is_empty():
+                        trait_data = trait_row.to_dicts()[0]
+                        save_example_images(cfg.dump_to, annotation, trait_data)
+                        logger.debug(
+                            "Saved example image. Memory: %s", get_memory_info()
+                        )
+                    else:
+                        # TODO: log that there are no traits for this group image and beetle position.
+                        pass
 
                 results.append(annotation)
 
@@ -414,6 +563,22 @@ def worker_fn(
                         indiv_img_path=str(indiv_img_abs_path),
                     )
                 )
+
+        # Clean up group images after processing all individuals
+        del group_img_gray
+        gc.collect()
+        logger.info(
+            "Finished processing group %s. Memory after cleanup: %s",
+            group_img_basename,
+            get_memory_info(),
+        )
+
+    logger.info(
+        "Worker completed. Processed %d groups, %d results. Final memory: %s",
+        len(group_img_basenames),
+        len(results),
+        get_memory_info(),
+    )
     return results
 
 
@@ -450,6 +615,8 @@ def load_img_df(cfg: Config) -> pl.DataFrame:
 
 @beartype.beartype
 def main(cfg: Config) -> int:
+    logging.basicConfig(level=logging.INFO, format=log_format)
+    logger = logging.getLogger("format-hawaii")
     errors = []
 
     trait_df = load_trait_df(cfg)
@@ -713,7 +880,8 @@ def main(cfg: Config) -> int:
             partition=cfg.slurm_partition,
             gpus_per_node=0,
             ntasks_per_node=1,
-            cpus_per_task=4,  # Request 4 CPUs for memory
+            cpus_per_task=8,
+            mem_per_cpu="10gb",
             stderr_to_stdout=True,
             account=cfg.slurm_acct,
             array_parallelism=safe_array_size,
@@ -782,7 +950,7 @@ def main(cfg: Config) -> int:
             logger.error("Job %d/%d failed: %s", job_idx + 1, len(all_jobs), e)
 
     # Report final statistics
-    logger.info("\n" + "=" * 60)
+    logger.info("=" * 60)
     logger.info("PROCESSING COMPLETE")
     logger.info("=" * 60)
     logger.info("Total annotations: %d", len(all_annotations))
@@ -813,18 +981,81 @@ def main(cfg: Config) -> int:
     # Save annotations to disk
     if all_annotations:
         output_file = cfg.dump_to / "annotations.json"
+        output_file.parent.mkdir(parents=True, exist_ok=True)
         logger.info("Saving annotations to %s", output_file)
-        # TODO: Save annotations with plenty of metadata.
-        # group_img_basename (str)
-        # beetle_position (int)
-        # group_img_rel_path (str)
-        # indiv_img_rel_path (str)
-        # indiv_img_abs_path (str)
-        # individual_id(str)
-        # origin_x, origin_y (int)  # crop top-left in group pixels
-        # ncc (float) # match quality
-        # measurement_type (str)  # elytra_max_length, elytra_max_width, basal_pronotum_width
-        # polyline_px (list[float]) # flattened [x1,y1,x2,y2,...] in INDIVIDUAL pixels
+
+        # Convert annotations to JSON format with trait polylines
+        json_data = []
+
+        for annotation in all_annotations:
+            # Get base annotation data
+            ann_dict = annotation.to_dict()
+
+            # Get trait annotations for this beetle
+            trait_row = trait_df.filter(
+                (pl.col("GroupImgBasename") == annotation.group_img_basename)
+                & (pl.col("BeetlePosition") == annotation.beetle_position)
+            )
+
+            # Add trait polylines if available
+            if trait_row.is_empty():
+                ann_dict["measurements"] = []
+                json_data.append(ann_dict)
+                continue
+
+            measurements = []
+            trait_data = trait_row.to_dicts()[0]
+
+            # Process each trait type
+            trait_types = {
+                "coords_elytra_max_length": "elytra_max_length",
+                "coords_basal_pronotum_width": "basal_pronotum_width",
+                "coords_elytra_max_width": "elytra_max_width",
+            }
+
+            for coords_key, measurement_type in trait_types.items():
+                if coords_key not in trait_data:
+                    continue
+
+                coords = trait_data[coords_key]
+                if not coords:
+                    continue
+
+                for polyline in coords:
+                    if len(polyline) < 2:
+                        continue
+
+                    if len(polyline) % 2 != 0:
+                        logger.warning(
+                            "Skipping polyline with odd length %d for %s in %s beetle %d",
+                            len(polyline),
+                            measurement_type,
+                            annotation.group_img_basename,
+                            annotation.beetle_position,
+                        )
+                        continue
+
+                    # Convert to individual image coordinates
+                    origin_x, origin_y = annotation.indiv_offset_px
+                    adjusted_polyline = []
+                    for i in range(0, len(polyline), 2):
+                        adjusted_x = polyline[i] - origin_x
+                        adjusted_y = polyline[i + 1] - origin_y
+                        adjusted_polyline.extend([adjusted_x, adjusted_y])
+
+                    measurements.append({
+                        "measurement_type": measurement_type,
+                        "polyline_px": adjusted_polyline,
+                    })
+
+            ann_dict["measurements"] = measurements
+            json_data.append(ann_dict)
+
+        # Save to JSON file
+        with open(output_file, "w") as f:
+            json.dump(json_data, f, indent=2)
+
+        logger.info("Saved %d annotations to %s", len(json_data), output_file)
 
     return 0
 
