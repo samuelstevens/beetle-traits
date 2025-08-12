@@ -47,3 +47,5 @@ What does this enable me to focus on?
 - Writing a good dataloader for Hawaii
 
 Update: downloaded Hawaii data. Individual annotations are missing, and some group trait annotations are wrong. Asked both Mridul and Rayeed about both of these issues. See `notebooks/hawaii.py` for code.
+
+I plan on using `grain` and following this tutorial: https://google-grain.readthedocs.io/en/latest/tutorials/dataset_basic_tutorial.html
