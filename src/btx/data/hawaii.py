@@ -73,23 +73,57 @@ import pathlib
 
 import beartype
 import grain
+import polars as pl
+from PIL import Image
 
 
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
 class Config:
-    root: pathlib.Path = pathlib.Path("data/hawaii-formatted")
+    hf_root: pathlib.Path = pathlib.Path("data/hawaii")
+    """Path to the dataset root downloaded from HuggingFace."""
+    annotations: pathlib.Path = pathlib.Path("data/hawaii-formatted/annotations.json")
+    """Path to the annotations.json file made by running format_hawaii.py."""
+    include_polylines: bool = True
+    """Whether to include polylines (lines with more than 2 points)."""
+
+    def __post_init__(self):
+        # TODO: Check that hf_root exists and is a directory
+        # TODO: Check that annotations.json exists and is a file.
+        pass
 
 
 @beartype.beartype
 class Dataset(grain.sources.RandomAccessDataSource):
+    class Sample:
+        pass
+
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        raise NotImplementedError()
+        self.df = pl.read_json(cfg.annotations)
+
+        if self.cfg.include_polylines:
+            raise NotImplementedError()
+        else:
+            # measurements: list[struct[2]]
+            # Example:
+            # [{'measurement_type': 'elytra_max_length', 'polyline_px': [231.3699999999999, 410.8299999999999, 190.32999999999993, 239.17999999999984]}, {'measurement_type': 'basal_pronotum_width', 'polyline_px': [187.57999999999993, 237.21000000000004, 250.0300000000002, 216.0]}, {'measurement_type': 'elytra_max_width', 'polyline_px': [178.92999999999984, 341.8899999999999, 293.03999999999996, 316.3600000000001]}]
+            #
+            # Only pick examples where all measurements only have four floats (two points)
+            self.df = self.df.filter()
 
     def __len__(self) -> int:
-        raise NotImplementedError()
+        return self.df.height
 
-    def __getitem__(self, idx: int) -> dict[str, object]:
+    def __getitem__(self, idx: int) -> Sample:
         """Load image and annotations for given index."""
-        raise NotImplementedError()
+        row = self.df.row(index=idx, named=True)
+        filepath = self.cfg.hf_root / "individual_specimens" / row["indiv_img_rel_path"]
+        # TODO: include error message.
+        assert filepath.is_file()
+
+        img = Image.open(filepath)
+        if self.cfg.include_polylines:
+            raise NotImplementedError()
+
+        breakpoint()

@@ -2,6 +2,7 @@
 import dataclasses
 
 import beartype
+import grain
 import jax
 import tyro
 
@@ -25,9 +26,14 @@ class Config:
 @beartype.beartype
 def main(cfg: Config):
     key = jax.random.key(seed=cfg.seed)
-    dataset = btx.data.HawaiiDataset(cfg.data)
-    breakpoint()
+    dataset = (
+        grain.MapDataset.source(btx.data.HawaiiDataset(cfg.data))
+        .shuffle(seed=cfg.seed)
+        .batch(batch_size=4)
+    )
+    print(dataset[0])
     model = btx.modeling.make(cfg.model, key)
+    breakpoint()
 
 
 if __name__ == "__main__":
