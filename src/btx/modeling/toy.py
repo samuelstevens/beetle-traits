@@ -3,6 +3,7 @@ import dataclasses
 
 import beartype
 import chex
+import einops
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -12,8 +13,7 @@ from jaxtyping import Array, Float, jaxtyped
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
 class Config:
-    n_keypts: int = 2
-    img_size: int = 128
+    img_size: int = 256
     patch: int = 16
     d_model: int = 192
 
@@ -27,7 +27,7 @@ class PatchEmbed(eqx.Module):
         self,
         patch: int = 16,
         d_model: int = 192,
-        img_size: int = 128,
+        img_size: int = 256,
         *,
         key: chex.PRNGKey,
     ):
@@ -43,13 +43,12 @@ class PatchEmbed(eqx.Module):
         n_patches = (img_size // patch) ** 2
         self.pos = jax.random.normal(k2, (n_patches + 1, d_model)) * 0.02
 
-    def __call__(self, x):  # x: (B,3,H,W)
-        x = self.proj(x)  # (B,E,H',W')
-        x = x.reshape(x.shape[0], x.shape[1], -1)  # (B,E,P)
-        x = x.transpose(0, 2, 1)  # (B,P,E)
-        cls = jnp.mean(x, axis=1, keepdims=True)  # cheap “class token”
-        x = jnp.concatenate([cls, x], axis=1) + self.pos
-        return x  # (B,P+1,E)
+    def __call__(self, x_cwh: Float[Array, "c w h"]):
+        x_dwh = self.proj(x_cwh)  # (B,E,H',W')
+        x_pd = einops.rearrange(x_dwh, "d w h -> (w h) d")
+        cls_1d = einops.reduce(x_pd, "patches d -> 1 d", "mean")
+        x_pd = jnp.concatenate([cls_1d, x_pd], axis=0) + self.pos
+        return x_pd
 
 
 @jaxtyped(typechecker=beartype.beartype)
@@ -60,16 +59,14 @@ class Model(eqx.Module):
     def __init__(self, cfg: Config, *, key: chex.PRNGKey):
         k1, k2 = jax.random.split(key)
         self.patch = PatchEmbed(cfg.patch, cfg.d_model, cfg.img_size, key=k1)
-        self.head = eqx.nn.Linear(cfg.d_model, cfg.n_keypts * 2, key=k2)
+        # Predict 8 coordinates: two measurements x (x, y) x 2 endpoints
+        self.head = eqx.nn.Linear(cfg.d_model, 8, key=k2)
 
     def __call__(
-        self,
-        x_cwh: Float[Array, "channels width height"],
-        *,
-        key: chex.PRNGKey | None = None,
-    ):
-        x_pd = self.patch(x_cwh)  # (B,P+1,E)
-        breakpoint()
-        cls = x[:, 0]  # take pooled token
-        coords = jax.nn.sigmoid(self.head(cls))  # (B,2*K) ∈ [0,1]
-        return coords.reshape(x.shape[0], -1, 2)
+        self, x_whc: Float[Array, "w h c"], *, key: chex.PRNGKey | None = None
+    ) -> Float[Array, "2 2 2"]:
+        x_cwh = einops.rearrange(x_whc, "w h c -> c w h")
+        x_pd = self.patch(x_cwh)
+        cls_d = x_pd[0, :]
+        coords = self.head(cls_d)
+        return coords.reshape(2, 2, 2)
