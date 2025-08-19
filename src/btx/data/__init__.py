@@ -1,15 +1,15 @@
-from .biorepo import Config as BiorepoConfig
-from .biorepo import Dataset as BiorepoDataset
+from .beetlepalooza import Config as BeetlePaloozaConfig
+from .beetlepalooza import Dataset as BeetlePaloozaDataset
+from .biorepo import Config as BioRepoConfig
+from .biorepo import Dataset as BioRepoDataset
 from .hawaii import Config as HawaiiConfig
 from .hawaii import Dataset as HawaiiDataset
-from .neon import Config as NeonConfig
-from .neon import Dataset as NeonDataset
 
 __all__ = [
-    "BiorepoConfig",
-    "BiorepoDataset",
+    "BioRepoConfig",
+    "BioRepoDataset",
     "HawaiiConfig",
     "HawaiiDataset",
-    "NeonConfig",
-    "NeonDataset",
+    "BeetlePaloozaConfig",
+    "BeetlePaloozaDataset",
 ]
