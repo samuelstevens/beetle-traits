@@ -14,7 +14,6 @@ import tyro
 
 
 def main(dump_to: pathlib.Path = pathlib.Path("data/biorepo")):
-    print("uv run --with huggingface_hub hf auth login")
     hfhub.snapshot_download(
         repo_id="imageomics/sentinel-beetles",
         repo_type="dataset",
