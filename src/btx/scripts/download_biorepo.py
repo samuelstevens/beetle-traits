@@ -1,4 +1,4 @@
-# src/btx/scripts/download_beetlepalooza.py
+# src/btx/scripts/download_biorepo.py
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
@@ -13,17 +13,17 @@ import huggingface_hub as hfhub
 import tyro
 
 
-def main(dump_to: pathlib.Path = pathlib.Path("data/beetlepalooza")):
+def main(dump_to: pathlib.Path = pathlib.Path("data/biorepo")):
+    print("uv run --with huggingface_hub hf auth login")
     hfhub.snapshot_download(
-        repo_id="imageomics/2018-NEON-beetles",
+        repo_id="imageomics/sentinel-beetles",
         repo_type="dataset",
         local_dir=str(dump_to),
         allow_patterns=[
-            "individual_specimens/**/*.png",
+            "data/*.parquet",
             "*.csv",
             "README.md",
         ],
-        revision="refs/pr/25",
         max_workers=8,
     )
 

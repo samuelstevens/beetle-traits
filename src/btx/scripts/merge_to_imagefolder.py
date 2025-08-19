@@ -36,13 +36,12 @@ class Config:
 def _move_bp(cfg: Config, start: int, end: int):
     bp_df = pl.read_csv(cfg.bp_root / "individual_specimens.csv")
 
-    for img_fpath, sample_id in (
-        bp_df.select("individualImageFilePath", "NEON_sampleID")
-        .slice(start, end - start)
-        .iter_rows()
+    for (img_fpath,) in (
+        bp_df.select("individualImageFilePath").slice(start, end - start).iter_rows()
     ):
         src_fpath = cfg.bp_root / img_fpath
-        dst_fpath = cfg.dump_to / "beetlepalooza" / f"{sample_id}.png"
+        img_fname = pathlib.Path(img_fpath).name
+        dst_fpath = cfg.dump_to / "beetlepalooza" / img_fname
 
         if not src_fpath.exists():
             continue
@@ -54,7 +53,22 @@ def _move_bp(cfg: Config, start: int, end: int):
 
 
 @beartype.beartype
-def _move_hi(cfg: Config):
+def _move_hi(cfg: Config, start: int, end: int):
+    hi_df = pl.read_csv(cfg.hi_root / "images_metadata.csv")
+    for (img_fpath,) in (
+        hi_df.select("individualImageFilePath").slice(start, end - start).iter_rows()
+    ):
+        src_fpath = cfg.hi_root / img_fpath
+        img_fname = pathlib.Path(img_fpath).name
+        dst_fpath = cfg.dump_to / "hawaii" / img_fname
+
+        if not src_fpath.exists():
+            continue
+
+        if dst_fpath.exists():
+            continue
+
+        shutil.copy2(src_fpath, dst_fpath)
     pass
 
 
@@ -75,6 +89,7 @@ def main(cfg: Config):
     (cfg.dump_to / "biorepo").mkdir(exist_ok=True, parents=True)
 
     bp_df = pl.read_csv(cfg.bp_root / "individual_specimens.csv")
+    hi_df = pl.read_csv(cfg.hi_root / "images_metadata.csv")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.n_threads) as pool:
         futs = []
@@ -83,6 +98,12 @@ def main(cfg: Config):
         futs.extend([
             pool.submit(_move_bp, cfg, start, end)
             for start, end in helpers.batched_idx(bp_df.height, cfg.job_size)
+        ])
+
+        # Hawaii
+        futs.extend([
+            pool.submit(_move_hi, cfg, start, end)
+            for start, end in helpers.batched_idx(hi_df.height, cfg.job_size)
         ])
 
         for fut in helpers.progress(
