@@ -73,8 +73,22 @@ def _move_hi(cfg: Config, start: int, end: int):
 
 
 @beartype.beartype
-def _move_br(cfg: Config):
-    pass
+def _move_br(cfg: Config, i: int):
+    pq_fpath = cfg.br_root / "data" / f"train-{i:05}-of-00029.parquet"
+    if not pq_fpath.exists():
+        return
+
+    br_df = pl.read_parquet(pq_fpath)
+
+    for (file_dict,) in br_df.select("file_path").iter_rows():
+        img_bytes = file_dict["bytes"]
+        img_fpath = cfg.dump_to / "biorepo" / file_dict["path"]
+
+        if img_fpath.exists():
+            continue
+
+        with open(img_fpath, "wb") as fd:
+            fd.write(img_bytes)
 
 
 @beartype.beartype
@@ -105,6 +119,9 @@ def main(cfg: Config):
             pool.submit(_move_hi, cfg, start, end)
             for start, end in helpers.batched_idx(hi_df.height, cfg.job_size)
         ])
+
+        # BioRepo
+        futs.extend([pool.submit(_move_br, cfg, i) for i in range(29)])
 
         for fut in helpers.progress(
             concurrent.futures.as_completed(futs), total=len(futs), desc="copying"
