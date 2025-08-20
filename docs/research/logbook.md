@@ -60,3 +60,17 @@ uv run src/btx/scripts/format_hawaii.py --ignore-errors --sample-rate 5 --hf-roo
 And is saved to `data/hawaii-formatted/annotations.json`.
 
 Now we need to build a dataloader for this data.
+
+# 08/18/2025
+
+The dataloader is mostly done.
+Now I have to do a couple things to start getting real results.
+
+1. train/val split so that we can meaningfully track progress.
+2. Run it on a slurm node rather than the login node.
+
+I actually think that even with just using all the data, I would like to see that we can meaningfully overfit just one batch. -> we can! Using just a patch embed + a linear layer is enough with a batch size of 2 and SGD.
+
+So I need to read the Claude and ChatGPT research reports.
+Then we can use DINOv3 + an MLP + whatever loss term the LLMs think is correct.
+

@@ -54,27 +54,18 @@ Testing Strategy:
 3. Check distribution of NCC scores and image dimensions
 4. Test with grain's DataLoader for batching compatibility
 5. Validate against saved example images in random-examples/
-
-Example usage:
-    cfg = Config(root=pathlib.Path("data/hawaii-formatted"))
-    dataset = Dataset(cfg)
-    sample = dataset[0]
-    # sample contains:
-    # - 'image': numpy array of beetle image
-    # - 'elytra_max_length': [(x1,y1), (x2,y2)] in pixels
-    # - 'basal_pronotum_width': [(x1,y1), (x2,y2)] in pixels
-    # - 'elytra_max_width': [(x1,y1), (x2,y2)] in pixels
-    # - 'beetle_id': string identifier
-    # - 'ncc_score': float confidence score
 """
 
 import dataclasses
+import logging
 import pathlib
+import typing as tp
 
 import beartype
 import grain
+import jax.numpy as jnp
 import polars as pl
-from PIL import Image
+from jaxtyping import Array, Float, jaxtyped
 
 
 @beartype.beartype
@@ -86,6 +77,9 @@ class Config:
     """Path to the annotations.json file made by running format_hawaii.py."""
     include_polylines: bool = True
     """Whether to include polylines (lines with more than 2 points)."""
+    split: tp.Literal["train", "val"] = "train"
+    """Which split."""
+    seed: int = 0
 
     def __post_init__(self):
         # TODO: Check that hf_root exists and is a directory
@@ -93,14 +87,23 @@ class Config:
         pass
 
 
+@jaxtyped(typechecker=beartype.beartype)
+class Sample(tp.TypedDict):
+    img_fpath: str
+    elytra_width_px: Float[Array, "2 2"]
+    elytra_length_px: Float[Array, "2 2"]
+    beetle_id: str
+    beetle_position: int
+    group_img_basename: str
+
+
 @beartype.beartype
 class Dataset(grain.sources.RandomAccessDataSource):
-    class Sample:
-        pass
-
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.df = pl.read_json(cfg.annotations)
+
+        self.logger = logging.getLogger("hawaii-ds")
 
         if self.cfg.include_polylines:
             raise NotImplementedError()
@@ -110,7 +113,14 @@ class Dataset(grain.sources.RandomAccessDataSource):
             # [{'measurement_type': 'elytra_max_length', 'polyline_px': [231.3699999999999, 410.8299999999999, 190.32999999999993, 239.17999999999984]}, {'measurement_type': 'basal_pronotum_width', 'polyline_px': [187.57999999999993, 237.21000000000004, 250.0300000000002, 216.0]}, {'measurement_type': 'elytra_max_width', 'polyline_px': [178.92999999999984, 341.8899999999999, 293.03999999999996, 316.3600000000001]}]
             #
             # Only pick examples where all measurements only have four floats (two points)
-            self.df = self.df.filter()
+            self.df = self.df.filter(
+                pl.col("measurements").map_elements(
+                    lambda measurements: all(
+                        len(m["polyline_px"]) == 4 for m in measurements
+                    ),
+                    return_dtype=pl.Boolean,
+                )
+            )
 
     def __len__(self) -> int:
         return self.df.height
@@ -118,12 +128,41 @@ class Dataset(grain.sources.RandomAccessDataSource):
     def __getitem__(self, idx: int) -> Sample:
         """Load image and annotations for given index."""
         row = self.df.row(index=idx, named=True)
-        filepath = self.cfg.hf_root / "individual_specimens" / row["indiv_img_rel_path"]
+        fpath = self.cfg.hf_root / "individual_specimens" / row["indiv_img_rel_path"]
         # TODO: include error message.
-        assert filepath.is_file()
+        assert fpath.is_file()
 
-        img = Image.open(filepath)
+        elytra_width_px = None
+        elytra_length_px = None
+        for measurement in row["measurements"]:
+            if measurement["measurement_type"] == "elytra_max_length":
+                elytra_length_px = measurement["polyline_px"]
+            if measurement["measurement_type"] == "elytra_max_width":
+                elytra_width_px = measurement["polyline_px"]
+
+        if elytra_width_px is None:
+            self.logger.error(
+                "Image %s beetle %d has no elytra width.",
+                row["group_img_rel_path"],
+                row["beetle_position"],
+            )
+            elytra_width_px = [0.0, 0.0, 0.0, 0.0]
+        if elytra_length_px is None:
+            self.logger.error(
+                "Image %s beetle %d has no elytra length.",
+                row["group_img_rel_path"],
+                row["beetle_position"],
+            )
+            elytra_length_px = [0.0, 0.0, 0.0, 0.0]
+
         if self.cfg.include_polylines:
             raise NotImplementedError()
 
-        breakpoint()
+        return Sample(
+            img_fpath=str(fpath),
+            elytra_width_px=jnp.array(elytra_width_px).reshape(2, 2),
+            elytra_length_px=jnp.array(elytra_length_px).reshape(2, 2),
+            beetle_id=row["individual_id"],
+            beetle_position=row["beetle_position"],
+            group_img_basename=row["group_img_basename"],
+        )
