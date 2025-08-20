@@ -82,7 +82,8 @@ def _move_br(cfg: Config, i: int):
 
     for (file_dict,) in br_df.select("file_path").iter_rows():
         img_bytes = file_dict["bytes"]
-        img_fpath = cfg.dump_to / "biorepo" / file_dict["path"]
+        img_fname = pathlib.Path(file_dict["path"])
+        img_fpath = cfg.dump_to / "biorepo" / f"{img_fname.stem}_{i}{img_fname.suffix}"
 
         if img_fpath.exists():
             continue

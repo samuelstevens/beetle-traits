@@ -13,6 +13,7 @@ dependencies = [
     "einops>=0.8.1",
     "equinox>=0.13.0",
     "grain>=0.2.11",
+    "huggingface-hub>=0.34.4",
     "jax[cuda12]>=0.7.0",
     "jaxtyping>=0.3.2",
     "optax>=0.2.5",
@@ -37,5 +38,6 @@ package = true
 
 [dependency-groups]
 dev = [
+    "pdoc3>=0.11.6",
     "ruff>=0.12.4",
 ]

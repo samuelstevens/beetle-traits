@@ -74,3 +74,13 @@ I actually think that even with just using all the data, I would like to see tha
 So I need to read the Claude and ChatGPT research reports.
 Then we can use DINOv3 + an MLP + whatever loss term the LLMs think is correct.
 
+# 08/20/2025
+
+Now that I've passed candidacy, I can work on this again!
+So, we have EoMT, Gaussian heatmap regression, DINOv3, train/val splits.
+What to work on first?
+
+1. Train/val split.
+2. Gaussian heatmap regression
+3. DINOv3
+4. EoMT

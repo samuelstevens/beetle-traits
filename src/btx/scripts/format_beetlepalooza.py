@@ -1,9 +1,7 @@
 import dataclasses
 import pathlib
-import typing as tp
 
 import beartype
-import polars as pl
 import tyro
 
 
