@@ -39,5 +39,8 @@ package = true
 [dependency-groups]
 dev = [
     "pdoc3>=0.11.6",
+    "pytest>=8.4.1",
     "ruff>=0.12.4",
+    "torch>=2.8.0",
+    "torchvision>=0.23.0",
 ]

@@ -80,7 +80,22 @@ Now that I've passed candidacy, I can work on this again!
 So, we have EoMT, Gaussian heatmap regression, DINOv3, train/val splits.
 What to work on first?
 
-1. Train/val split.
+1. Train/val split. [done]
 2. Gaussian heatmap regression
 3. DINOv3
 4. EoMT
+
+
+# 08/22/2025
+
+- submitit+slurm
+
+I think that resizing makes the most sense.
+The metrics that I want to track:
+
+- {line, point} error in {px, cm}
+
+# 08/25/2025
+
+What can I do on beetles that's easy?
+Let's adapt DINOv3 to Jax.

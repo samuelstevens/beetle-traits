@@ -3,6 +3,7 @@ Module btx.modeling
 
 Sub-modules
 -----------
+* btx.modeling.dinov3
 * btx.modeling.toy
 
 Functions

@@ -7,9 +7,3 @@ Sub-modules
 * btx.helpers
 * btx.modeling
 * btx.scripts
-
-Functions
----------
-
-`main() ‑> None`
-:
