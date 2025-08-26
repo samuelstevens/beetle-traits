@@ -12,7 +12,7 @@ from jaxtyping import Array, Float, jaxtyped
 
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
-class Config:
+class Toy:
     img_size: int = 256
     patch: int = 16
     d_model: int = 192
@@ -56,7 +56,7 @@ class Model(eqx.Module):
     patch: PatchEmbed
     head: eqx.nn.Linear
 
-    def __init__(self, cfg: Config, *, key: chex.PRNGKey):
+    def __init__(self, cfg: Toy, *, key: chex.PRNGKey):
         k1, k2 = jax.random.split(key)
         self.patch = PatchEmbed(cfg.patch, cfg.d_model, cfg.img_size, key=k1)
         # Predict 8 coordinates: two measurements x (x, y) x 2 endpoints

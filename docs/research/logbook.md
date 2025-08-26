@@ -99,3 +99,8 @@ The metrics that I want to track:
 
 What can I do on beetles that's easy?
 Let's adapt DINOv3 to Jax.
+
+# 08/26/2025
+
+I have a Jax version of DINOv3.
+Now I need to feed its patch-level features as input to my dumb little MLP for predicing (x, y).

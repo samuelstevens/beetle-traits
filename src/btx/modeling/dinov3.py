@@ -21,32 +21,59 @@ from jaxtyping import Array, Float, PyTree, jaxtyped
 @dataclasses.dataclass(frozen=True)
 class Config:
     img_size: int = 224
+    """Image width and height in pixels."""
     patch_size: int = 16
+    """Size of each patch in pixels."""
     in_chans: int = 3
+    """Number of input image channels."""
     pos_embed_rope_base: float = 100.0
+    """Base frequency for RoPE positional encoding."""
     pos_embed_rope_min_period: float | None = None
+    """Minimum period for RoPE positional encoding."""
     pos_embed_rope_max_period: float | None = None
+    """Maximum period for RoPE positional encoding."""
     pos_embed_rope_normalize_coords: tp.Literal["min", "max", "separate"] = "separate"
+    """Coordinate normalization method for RoPE encoding."""
     pos_embed_rope_shift_coords: float | None = None
+    """Shift offset for RoPE coordinates."""
     pos_embed_rope_jitter_coords: float | None = None
+    """Jitter amount for RoPE coordinates."""
     pos_embed_rope_rescale_coords: float | None = None
+    """Rescaling factor for RoPE coordinates."""
     pos_embed_rope_dtype: str = "bf16"
+    """Data type for RoPE positional encoding."""
     embed_dim: int = 768
+    """Embedding dimension for transformer."""
     depth: int = 12
+    """Number of transformer blocks."""
     num_heads: int = 12
+    """Number of attention heads."""
     ffn_ratio: float = 4.0
+    """Feed-forward network expansion ratio."""
     qkv_bias: bool = True
+    """Whether to use bias in QKV projection."""
     drop_path_rate: float = 0.0
+    """Stochastic depth drop rate."""
     layerscale_init: float | None = None
+    """Initial value for layer scale."""
     norm_layer: str = "layernorm"
+    """Type of normalization layer to use."""
     ffn_layer: str = "mlp"
+    """Type of feed-forward network layer."""
     ffn_bias: bool = True
+    """Whether to use bias in feed-forward network."""
     proj_bias: bool = True
+    """Whether to use bias in output projection."""
     n_storage_tokens: int = 0
+    """Number of storage/register tokens."""
     mask_k_bias: bool = False
+    """Whether to mask K bias in attention."""
     untie_cls_and_patch_norms: bool = False
+    """Whether to use separate norms for CLS and patch tokens."""
     untie_global_and_local_cls_norm: bool = False
+    """Whether to use separate norms for global and local CLS tokens."""
     device: tp.Any | None = None
+    """Device for tensor operations."""
 
 
 _norm_layer_lookup = {
@@ -357,7 +384,7 @@ class SelfAttention(eqx.Module):
         )
 
     def __call__(
-        self, x_nd: Float[Array, "n_tok d"], rope: Float[Array, "2 n_pos d_head"] | None
+        self, x_nd: Float[Array, "n d"], rope: Float[Array, "2 n_pos d_head"] | None
     ) -> Float[Array, "n d"]:
         n_tok, d = x_nd.shape
 
@@ -406,7 +433,7 @@ class SelfAttentionBlock(eqx.Module):
         self.ls2 = LayerScale(cfg.embed_dim, key=k4)
 
     def __call__(
-        self, x_nd: Float[Array, "n d"], rope: Float[Array, "2 n d_head"]
+        self, x_nd: Float[Array, "n d"], rope: Float[Array, "2 n_pos d_head"]
     ) -> Float[Array, "n d"]:
         x_attn_nd = x_nd + self.ls1(self.attn(jax.vmap(self.norm1)(x_nd), rope=rope))
         x_ffn_nd = x_attn_nd + self.ls2(
@@ -481,7 +508,7 @@ class VisionTransformer(eqx.Module):
 
 
 @beartype.beartype
-def load(fpath: str) -> VisionTransformer:
+def load(fpath: str | pathlib.Path) -> VisionTransformer:
     with open(fpath, "rb") as fd:
         cfg_dict = json.loads(fd.readline())
         cfg = Config(**cfg_dict)
@@ -490,19 +517,11 @@ def load(fpath: str) -> VisionTransformer:
 
 
 @beartype.beartype
-def dump(model: VisionTransformer, fpath: str):
+def dump(model: VisionTransformer, fpath: str | pathlib.Path):
     with open(fpath, "wb") as fd:
         cfg_str = json.dumps(dataclasses.asdict(model.cfg))
         fd.write((cfg_str + "\n").encode("utf-8"))
         eqx.tree_serialise_leaves(fd, model)
-
-
-@beartype.beartype
-def _parse_name_pt(dinov3_ckpt: pathlib.Path) -> str:
-    name_ds, sha = dinov3_ckpt.stem.split("-")
-    *name, pretrain, ds = name_ds.split("_")
-    assert pretrain == "pretrain"
-    return "_".join(name)
 
 
 _PRETRAINED_CFGS = {
@@ -665,6 +684,14 @@ _PRETRAINED_CFGS = {
 }
 
 
+@beartype.beartype
+def _parse_name_pt(dinov3_ckpt: pathlib.Path) -> str:
+    name_ds, sha = dinov3_ckpt.stem.split("-")
+    *name, pretrain, ds = name_ds.split("_")
+    assert pretrain == "pretrain"
+    return "_".join(name)
+
+
 def _tokenize(path: str) -> list[str | int]:
     """Split 'blocks.0.mlp.fc1.weight' -> ['blocks', 0, 'mlp', 'fc1', 'weight']"""
     toks = []
@@ -742,10 +769,6 @@ def _coerce_to_jax(
         value = value.reshape(update_dst.shape)
 
     return value
-
-
-def load_torch():
-    pass
 
 
 @beartype.beartype
