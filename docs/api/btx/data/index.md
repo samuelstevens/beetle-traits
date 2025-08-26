@@ -6,6 +6,7 @@ Sub-modules
 * btx.data.beetlepalooza
 * btx.data.biorepo
 * btx.data.hawaii
+* btx.data.utils
 
 Classes
 -------
@@ -13,8 +14,8 @@ Classes
 `BioRepoConfig()`
 :   
 
-`HawaiiConfig(hf_root: pathlib.Path = PosixPath('data/hawaii'), annotations: pathlib.Path = PosixPath('data/hawaii-formatted/annotations.json'), include_polylines: bool = True, split: Literal['train', 'val'] = 'train', seed: int = 0)`
-:   Config(hf_root: pathlib.Path = PosixPath('data/hawaii'), annotations: pathlib.Path = PosixPath('data/hawaii-formatted/annotations.json'), include_polylines: bool = True, split: Literal['train', 'val'] = 'train', seed: int = 0)
+`HawaiiConfig(hf_root: pathlib.Path = PosixPath('data/hawaii'), annotations: pathlib.Path = PosixPath('data/hawaii-formatted/annotations.json'), include_polylines: bool = True, split: Literal['train', 'val'] = 'train', seed: int = 0, min_val_groups: int = 2, min_val_beetles: int = 20, n_workers: int = 4)`
+:   Config(hf_root: pathlib.Path = PosixPath('data/hawaii'), annotations: pathlib.Path = PosixPath('data/hawaii-formatted/annotations.json'), include_polylines: bool = True, split: Literal['train', 'val'] = 'train', seed: int = 0, min_val_groups: int = 2, min_val_beetles: int = 20, n_workers: int = 4)
 
     ### Instance variables
 
@@ -27,8 +28,17 @@ Classes
     `include_polylines: bool`
     :   Whether to include polylines (lines with more than 2 points).
 
-    `seed: int`
+    `min_val_beetles: int`
+    :   Minimum beetles per species in validation.
+
+    `min_val_groups: int`
+    :   Minimum group images per species in validation.
+
+    `n_workers: int`
     :
+
+    `seed: int`
+    :   Random seed for split.
 
     `split: Literal['train', 'val']`
     :   Which split.

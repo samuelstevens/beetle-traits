@@ -11,8 +11,7 @@ import beartype
 
 @beartype.beartype
 def fssafe(s: str) -> str:
-    """
-    Convert a string to be filesystem-safe by replacing special characters.
+    """Convert a string to be filesystem-safe by replacing special characters.
 
     This is particularly useful for checkpoint names that contain characters like
     'hf-hub:timm/ViT-L-16-SigLIP2-256' which need to be converted to something like
@@ -46,8 +45,7 @@ def fssafe(s: str) -> str:
 @beartype.beartype
 class progress:
     def __init__(self, it, *, every: int = 10, desc: str = "progress", total: int = 0):
-        """
-        Wraps an iterable with a logger like tqdm but doesn't use any control codes to manipulate a progress bar, which doesn't work well when your output is redirected to a file. Instead, simple logging statements are used, but it includes quality-of-life features like iteration speed and predicted time to finish.
+        """Wraps an iterable with a logger like tqdm but doesn't use any control codes to manipulate a progress bar, which doesn't work well when your output is redirected to a file. Instead, simple logging statements are used, but it includes quality-of-life features like iteration speed and predicted time to finish.
 
         Args:
             it: Iterable to wrap.
@@ -99,8 +97,7 @@ class progress:
 
 @beartype.beartype
 class batched_idx:
-    """
-    Iterate over (start, end) indices for total_size examples, where end - start is at most batch_size.
+    """Iterate over (start, end) indices for total_size examples, where end - start is at most batch_size.
 
     Args:
         total_size: total number of examples
@@ -111,11 +108,6 @@ class batched_idx:
     """
 
     def __init__(self, total_size: int, batch_size: int):
-        """
-        Args:
-            total_size: total number of examples
-            batch_size: maximum distance between the generated indices
-        """
         self.total_size = total_size
         self.batch_size = batch_size
 

@@ -63,9 +63,12 @@ import typing as tp
 
 import beartype
 import grain
-import jax.numpy as jnp
+import numpy as np
 import polars as pl
-from jaxtyping import Array, Float, jaxtyped
+
+from . import utils
+
+logger = logging.getLogger("hawaii")
 
 
 @beartype.beartype
@@ -79,7 +82,14 @@ class Config:
     """Whether to include polylines (lines with more than 2 points)."""
     split: tp.Literal["train", "val"] = "train"
     """Which split."""
+    # Split-related configuration.
     seed: int = 0
+    """Random seed for split."""
+    min_val_groups: int = 2
+    """Minimum group images per species in validation."""
+    min_val_beetles: int = 20
+    """Minimum beetles per species in validation."""
+    n_workers: int = 4
 
     def __post_init__(self):
         # TODO: Check that hf_root exists and is a directory
@@ -87,21 +97,115 @@ class Config:
         pass
 
 
-@jaxtyped(typechecker=beartype.beartype)
-class Sample(tp.TypedDict):
-    img_fpath: str
-    elytra_width_px: Float[Array, "2 2"]
-    elytra_length_px: Float[Array, "2 2"]
-    beetle_id: str
-    beetle_position: int
-    group_img_basename: str
+@beartype.beartype
+def _grouped_split(cfg: Config) -> pl.DataFrame:
+    """
+    Group-aware train/val split.
+
+    For each species, try to grab at least two group images and 10 samples per species. All of the individuals in a single group image are either in train OR test.
+    """
+    df = pl.read_json(cfg.annotations)
+
+    # Create group-level statistics dataframe
+    group_stats = df.group_by(["group_img_basename", "taxon_id"]).agg(
+        pl.len().alias("n_beetles")
+    )
+
+    # Add taxon-level group counts
+    taxon_group_counts = group_stats.group_by("taxon_id").agg(
+        pl.col("group_img_basename").n_unique().alias("n_groups")
+    )
+
+    # Join to get n_groups for each row
+    group_stats = group_stats.join(taxon_group_counts, on="taxon_id")
+
+    # Species with limited group images go ENTIRELY to validation
+    val_group_imgs = set()
+    val_group_imgs.update(
+        group_stats.filter(pl.col("n_groups") <= cfg.min_val_groups)
+        .get_column("group_img_basename")
+        .to_list()
+    )
+
+    # For species with more groups, select up to cfg.min_val_groups groups and 10 samples
+    for (taxon_id,) in (
+        taxon_group_counts.filter(pl.col("n_groups") > cfg.min_val_groups)
+        .select("taxon_id")
+        .iter_rows()
+    ):
+        taxon_groups = group_stats.filter(pl.col("taxon_id") == taxon_id).filter(
+            ~pl.col("group_img_basename").is_in(val_group_imgs)
+        )
+
+        # Take groups until we have 2 groups or 10 samples
+        total_beetles = 0
+        total_groups = 0
+        for group_img, n_beetles in (
+            taxon_groups.select("group_img_basename", "n_beetles")
+            .sample(fraction=1.0, with_replacement=False, shuffle=True, seed=cfg.seed)
+            .iter_rows()
+        ):
+            if (
+                total_groups >= cfg.min_val_groups
+                and total_beetles >= cfg.min_val_beetles
+            ):
+                break
+
+            val_group_imgs.add(group_img)
+            total_beetles += n_beetles
+            total_groups += 1
+
+    # Log the split statistics
+    total = len(df)
+    val_df = df.filter(pl.col("group_img_basename").is_in(val_group_imgs))
+    val_total = len(val_df)
+
+    # Get per-taxon statistics
+    val_stats = val_df.group_by("taxon_id").agg([
+        pl.len().alias("val_samples"),
+        pl.col("group_img_basename").n_unique().alias("val_groups"),
+    ])
+
+    # Join with totals
+    taxon_totals = df.group_by("taxon_id").agg([
+        pl.len().alias("total_samples"),
+        pl.col("group_img_basename").n_unique().alias("total_groups"),
+    ])
+
+    split_stats = taxon_totals.join(val_stats, on="taxon_id", how="left").fill_null(0)
+
+    logger.info(
+        f"Total samples: {total}, Val: {val_total} ({100 * val_total / total:.1f}%)"
+    )
+
+    for row in split_stats.sort("taxon_id").iter_rows(named=True):
+        taxon_id = row["taxon_id"]
+        total_count = row["total_samples"]
+        val_count = row["val_samples"]
+        total_groups = row["total_groups"]
+        val_groups_count = row["val_groups"]
+
+        split_type = "ALL VAL" if total_groups <= 2 else "MIXED"
+        pct = 100 * val_count / total_count if total_count > 0 else 0
+        logger.info(
+            f"  {taxon_id} [{split_type}]: {val_count}/{total_count} samples ({pct:.1f}%), "
+            f"{val_groups_count}/{total_groups} groups"
+        )
+
+    # Build split table (each beetle inherits its group's split)
+    return df.with_columns(
+        pl.when(pl.col("group_img_basename").is_in(val_group_imgs))
+        .then(pl.lit("val"))
+        .otherwise(pl.lit("train"))
+        .alias("split")
+    )
 
 
 @beartype.beartype
 class Dataset(grain.sources.RandomAccessDataSource):
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        self.df = pl.read_json(cfg.annotations)
+        self.df = _grouped_split(cfg).filter(pl.col("split") == cfg.split)
 
         self.logger = logging.getLogger("hawaii-ds")
 
@@ -125,7 +229,7 @@ class Dataset(grain.sources.RandomAccessDataSource):
     def __len__(self) -> int:
         return self.df.height
 
-    def __getitem__(self, idx: int) -> Sample:
+    def __getitem__(self, idx: int) -> utils.Sample:
         """Load image and annotations for given index."""
         row = self.df.row(index=idx, named=True)
         fpath = self.cfg.hf_root / "individual_specimens" / row["indiv_img_rel_path"]
@@ -158,10 +262,9 @@ class Dataset(grain.sources.RandomAccessDataSource):
         if self.cfg.include_polylines:
             raise NotImplementedError()
 
-        return Sample(
+        return utils.Sample(
             img_fpath=str(fpath),
-            elytra_width_px=jnp.array(elytra_width_px).reshape(2, 2),
-            elytra_length_px=jnp.array(elytra_length_px).reshape(2, 2),
+            points_px=np.array(elytra_width_px + elytra_length_px).reshape(2, 2, 2),
             beetle_id=row["individual_id"],
             beetle_position=row["beetle_position"],
             group_img_basename=row["group_img_basename"],

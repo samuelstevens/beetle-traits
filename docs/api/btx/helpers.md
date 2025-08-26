@@ -55,10 +55,6 @@ Classes
     
     Returns:
         A generator of (int, int) tuples that can slice up a list or a tensor.
-    
-    Args:
-        total_size: total number of examples
-        batch_size: maximum distance between the generated indices
 
 `progress(it, *, every: int = 10, desc: str = 'progress', total: int = 0)`
 :   Wraps an iterable with a logger like tqdm but doesn't use any control codes to manipulate a progress bar, which doesn't work well when your output is redirected to a file. Instead, simple logging statements are used, but it includes quality-of-life features like iteration speed and predicted time to finish.

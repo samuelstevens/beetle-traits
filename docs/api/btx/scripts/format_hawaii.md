@@ -81,8 +81,8 @@ Functions
 Classes
 -------
 
-`Annotation(group_img_basename: str, beetle_position: int, group_img_abs_path: pathlib.Path, indiv_img_abs_path: pathlib.Path, indiv_offset_px: tuple[float, float], individual_id: str, ncc: float)`
-:   Annotation(group_img_basename: str, beetle_position: int, group_img_abs_path: pathlib.Path, indiv_img_abs_path: pathlib.Path, indiv_offset_px: tuple[float, float], individual_id: str, ncc: float)
+`Annotation(group_img_basename: str, beetle_position: int, group_img_abs_path: pathlib.Path, indiv_img_abs_path: pathlib.Path, indiv_offset_px: tuple[float, float], individual_id: str, ncc: float, taxon_id: str, scientific_name: str)`
+:   Annotation(group_img_basename: str, beetle_position: int, group_img_abs_path: pathlib.Path, indiv_img_abs_path: pathlib.Path, indiv_offset_px: tuple[float, float], individual_id: str, ncc: float, taxon_id: str, scientific_name: str)
 
     ### Instance variables
 
@@ -105,15 +105,21 @@ Classes
     :
 
     `ncc: float`
-    :
+    :   Normalized cross-correlation score from template matching.
+
+    `scientific_name: str`
+    :   Scientific name (genus species).
+
+    `taxon_id: str`
+    :   Six letter taxon ID code.
 
     ### Methods
 
     `to_dict(self) ‑> dict`
     :   Convert annotation to dictionary for JSON serialization.
 
-`Config(hf_root: pathlib.Path = PosixPath('data/hawaii'), log_to: pathlib.Path = PosixPath('logs'), dump_to: pathlib.Path = PosixPath('data/hawaii-formatted'), ignore_errors: bool = False, seed: int = 42, sample_rate: int = 20, slurm_acct: str = '', slurm_partition: str = 'parallel', n_hours: float = 4.0, groups_per_job: int = 4)`
-:   Config(hf_root: pathlib.Path = PosixPath('data/hawaii'), log_to: pathlib.Path = PosixPath('logs'), dump_to: pathlib.Path = PosixPath('data/hawaii-formatted'), ignore_errors: bool = False, seed: int = 42, sample_rate: int = 20, slurm_acct: str = '', slurm_partition: str = 'parallel', n_hours: float = 4.0, groups_per_job: int = 4)
+`Config(hf_root: pathlib.Path = PosixPath('data/hawaii'), log_to: pathlib.Path = PosixPath('logs'), dump_to: pathlib.Path = PosixPath('data/hawaii-formatted'), ignore_errors: bool = False, seed: int = 42, sample_rate: int = 20, slurm_acct: str = '', slurm_partition: str = 'parallel', n_hours: float = 2.0, groups_per_job: int = 4)`
+:   Config(hf_root: pathlib.Path = PosixPath('data/hawaii'), log_to: pathlib.Path = PosixPath('logs'), dump_to: pathlib.Path = PosixPath('data/hawaii-formatted'), ignore_errors: bool = False, seed: int = 42, sample_rate: int = 20, slurm_acct: str = '', slurm_partition: str = 'parallel', n_hours: float = 2.0, groups_per_job: int = 4)
 
     ### Instance variables
 

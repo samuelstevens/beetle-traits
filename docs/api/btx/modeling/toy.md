@@ -4,22 +4,8 @@ Module btx.modeling.toy
 Classes
 -------
 
-`Config(img_size: int = 256, patch: int = 16, d_model: int = 192)`
-:   Config(img_size: int = 256, patch: int = 16, d_model: int = 192)
-
-    ### Instance variables
-
-    `d_model: int`
-    :
-
-    `img_size: int`
-    :
-
-    `patch: int`
-    :
-
-`Model(cfg: btx.modeling.toy.Config, *, key: jax.Array)`
-:   Model(cfg: btx.modeling.toy.Config, *, key: jax.Array)
+`Model(cfg: btx.modeling.toy.Toy, *, key: jax.Array)`
+:   Model(cfg: btx.modeling.toy.Toy, *, key: jax.Array)
 
     ### Ancestors (in MRO)
 
@@ -48,4 +34,18 @@ Classes
     :
 
     `proj: equinox.nn._conv.Conv2d`
+    :
+
+`Toy(img_size: int = 256, patch: int = 16, d_model: int = 192)`
+:   Toy(img_size: int = 256, patch: int = 16, d_model: int = 192)
+
+    ### Instance variables
+
+    `d_model: int`
+    :
+
+    `img_size: int`
+    :
+
+    `patch: int`
     :

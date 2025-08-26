@@ -60,8 +60,8 @@ Testing Strategy:
 Classes
 -------
 
-`Config(hf_root: pathlib.Path = PosixPath('data/hawaii'), annotations: pathlib.Path = PosixPath('data/hawaii-formatted/annotations.json'), include_polylines: bool = True, split: Literal['train', 'val'] = 'train', seed: int = 0)`
-:   Config(hf_root: pathlib.Path = PosixPath('data/hawaii'), annotations: pathlib.Path = PosixPath('data/hawaii-formatted/annotations.json'), include_polylines: bool = True, split: Literal['train', 'val'] = 'train', seed: int = 0)
+`Config(hf_root: pathlib.Path = PosixPath('data/hawaii'), annotations: pathlib.Path = PosixPath('data/hawaii-formatted/annotations.json'), include_polylines: bool = True, split: Literal['train', 'val'] = 'train', seed: int = 0, min_val_groups: int = 2, min_val_beetles: int = 20, n_workers: int = 4)`
+:   Config(hf_root: pathlib.Path = PosixPath('data/hawaii'), annotations: pathlib.Path = PosixPath('data/hawaii-formatted/annotations.json'), include_polylines: bool = True, split: Literal['train', 'val'] = 'train', seed: int = 0, min_val_groups: int = 2, min_val_beetles: int = 20, n_workers: int = 4)
 
     ### Instance variables
 
@@ -74,8 +74,17 @@ Classes
     `include_polylines: bool`
     :   Whether to include polylines (lines with more than 2 points).
 
-    `seed: int`
+    `min_val_beetles: int`
+    :   Minimum beetles per species in validation.
+
+    `min_val_groups: int`
+    :   Minimum group images per species in validation.
+
+    `n_workers: int`
     :
+
+    `seed: int`
+    :   Random seed for split.
 
     `split: Literal['train', 'val']`
     :   Which split.
@@ -91,38 +100,3 @@ Classes
     * grain._src.python.data_sources.RandomAccessDataSource
     * typing.Protocol
     * typing.Generic
-
-`Sample(*args, **kwargs)`
-:   dict() -> new empty dictionary
-    dict(mapping) -> new dictionary initialized from a mapping object's
-        (key, value) pairs
-    dict(iterable) -> new dictionary initialized as if via:
-        d = {}
-        for k, v in iterable:
-            d[k] = v
-    dict(**kwargs) -> new dictionary initialized with the name=value pairs
-        in the keyword argument list.  For example:  dict(one=1, two=2)
-
-    ### Ancestors (in MRO)
-
-    * builtins.dict
-
-    ### Class variables
-
-    `beetle_id: str`
-    :
-
-    `beetle_position: int`
-    :
-
-    `elytra_length_px: jaxtyping.Float[Array, '2 2']`
-    :
-
-    `elytra_width_px: jaxtyping.Float[Array, '2 2']`
-    :
-
-    `group_img_basename: str`
-    :
-
-    `img_fpath: str`
-    :

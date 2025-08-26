@@ -103,7 +103,7 @@ class Config:
     slurm_partition: str = "parallel"
     """Slurm partition to use."""
 
-    n_hours: float = 4.0
+    n_hours: float = 2.0
     """Number of hours to request for each job."""
 
     groups_per_job: int = 4
@@ -171,7 +171,12 @@ class Annotation:
     indiv_img_abs_path: pathlib.Path
     indiv_offset_px: tuple[float, float]
     individual_id: str
-    ncc: float  # Normalized cross-correlation score from template matching
+    ncc: float
+    """Normalized cross-correlation score from template matching."""
+    taxon_id: str
+    """Six letter taxon ID code."""
+    scientific_name: str
+    """Scientific name (genus species)."""
 
     def to_dict(self) -> dict:
         """Convert annotation to dictionary for JSON serialization."""
@@ -187,6 +192,8 @@ class Annotation:
             "origin_x": int(self.indiv_offset_px[0]),
             "origin_y": int(self.indiv_offset_px[1]),
             "ncc": self.ncc,
+            "taxon_id": self.taxon_id,
+            "scientific_name": self.scientific_name,
         }
 
 
@@ -524,6 +531,8 @@ def worker_fn(
 
                 # Get individual ID from the row data
                 individual_id = row.get("individualID", "")
+                taxon_id = row.get("taxonID", "")
+                scientific_name = row.get("scientificName", "")
 
                 annotation = Annotation(
                     group_img_basename=group_img_basename,
@@ -533,6 +542,8 @@ def worker_fn(
                     indiv_offset_px=offset_px,
                     individual_id=individual_id,
                     ncc=ncc_score,
+                    taxon_id=taxon_id,
+                    scientific_name=scientific_name,
                 )
 
                 # Save a random subset of annotations as example images
@@ -978,84 +989,86 @@ def main(cfg: Config) -> int:
             expected_count - len(all_annotations) - len(all_errors),
         )
 
+    if not all_annotations:
+        return 1
+
     # Save annotations to disk
-    if all_annotations:
-        output_file = cfg.dump_to / "annotations.json"
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        logger.info("Saving annotations to %s", output_file)
+    output_file = cfg.dump_to / "annotations.json"
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("Saving annotations to %s", output_file)
 
-        # Convert annotations to JSON format with trait polylines
-        json_data = []
+    # Convert annotations to JSON format with trait polylines
+    json_data = []
 
-        for annotation in all_annotations:
-            # Get base annotation data
-            ann_dict = annotation.to_dict()
+    for annotation in all_annotations:
+        # Get base annotation data
+        ann_dict = annotation.to_dict()
 
-            # Get trait annotations for this beetle
-            trait_row = trait_df.filter(
-                (pl.col("GroupImgBasename") == annotation.group_img_basename)
-                & (pl.col("BeetlePosition") == annotation.beetle_position)
-            )
+        # Get trait annotations for this beetle
+        trait_row = trait_df.filter(
+            (pl.col("GroupImgBasename") == annotation.group_img_basename)
+            & (pl.col("BeetlePosition") == annotation.beetle_position)
+        )
 
-            # Add trait polylines if available
-            if trait_row.is_empty():
-                ann_dict["measurements"] = []
-                json_data.append(ann_dict)
+        # Add trait polylines if available
+        if trait_row.is_empty():
+            ann_dict["measurements"] = []
+            json_data.append(ann_dict)
+            continue
+
+        measurements = []
+        trait_data = trait_row.to_dicts()[0]
+
+        # Process each trait type
+        trait_types = {
+            "coords_elytra_max_length": "elytra_max_length",
+            "coords_basal_pronotum_width": "basal_pronotum_width",
+            "coords_elytra_max_width": "elytra_max_width",
+        }
+
+        for coords_key, measurement_type in trait_types.items():
+            if coords_key not in trait_data:
                 continue
 
-            measurements = []
-            trait_data = trait_row.to_dicts()[0]
+            coords = trait_data[coords_key]
+            if not coords:
+                continue
 
-            # Process each trait type
-            trait_types = {
-                "coords_elytra_max_length": "elytra_max_length",
-                "coords_basal_pronotum_width": "basal_pronotum_width",
-                "coords_elytra_max_width": "elytra_max_width",
-            }
-
-            for coords_key, measurement_type in trait_types.items():
-                if coords_key not in trait_data:
+            for polyline in coords:
+                if len(polyline) < 2:
                     continue
 
-                coords = trait_data[coords_key]
-                if not coords:
+                if len(polyline) % 2 != 0:
+                    logger.warning(
+                        "Skipping polyline with odd length %d for %s in %s beetle %d",
+                        len(polyline),
+                        measurement_type,
+                        annotation.group_img_basename,
+                        annotation.beetle_position,
+                    )
                     continue
 
-                for polyline in coords:
-                    if len(polyline) < 2:
-                        continue
+                # Convert to individual image coordinates
+                origin_x, origin_y = annotation.indiv_offset_px
+                adjusted_polyline = []
+                for i in range(0, len(polyline), 2):
+                    adjusted_x = polyline[i] - origin_x
+                    adjusted_y = polyline[i + 1] - origin_y
+                    adjusted_polyline.extend([adjusted_x, adjusted_y])
 
-                    if len(polyline) % 2 != 0:
-                        logger.warning(
-                            "Skipping polyline with odd length %d for %s in %s beetle %d",
-                            len(polyline),
-                            measurement_type,
-                            annotation.group_img_basename,
-                            annotation.beetle_position,
-                        )
-                        continue
+                measurements.append({
+                    "measurement_type": measurement_type,
+                    "polyline_px": adjusted_polyline,
+                })
 
-                    # Convert to individual image coordinates
-                    origin_x, origin_y = annotation.indiv_offset_px
-                    adjusted_polyline = []
-                    for i in range(0, len(polyline), 2):
-                        adjusted_x = polyline[i] - origin_x
-                        adjusted_y = polyline[i + 1] - origin_y
-                        adjusted_polyline.extend([adjusted_x, adjusted_y])
+        ann_dict["measurements"] = measurements
+        json_data.append(ann_dict)
 
-                    measurements.append({
-                        "measurement_type": measurement_type,
-                        "polyline_px": adjusted_polyline,
-                    })
+    # Save to JSON file
+    with open(output_file, "w") as f:
+        json.dump(json_data, f, indent=2)
 
-            ann_dict["measurements"] = measurements
-            json_data.append(ann_dict)
-
-        # Save to JSON file
-        with open(output_file, "w") as f:
-            json.dump(json_data, f, indent=2)
-
-        logger.info("Saved %d annotations to %s", len(json_data), output_file)
+    logger.info("Saved %d annotations to %s", len(json_data), output_file)
 
     return 0
 

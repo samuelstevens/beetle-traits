@@ -149,6 +149,7 @@ class Config:
     """Minimum group images per species in validation."""
     min_val_beetles: int = 20
     """Minimum beetles per species in validation."""
+    n_workers: int = 4
 
     def __post_init__(self):
         # TODO: Check that hf_root exists and is a directory
@@ -401,8 +402,7 @@ import beartype
 
 @beartype.beartype
 def fssafe(s: str) -> str:
-    """
-    Convert a string to be filesystem-safe by replacing special characters.
+    """Convert a string to be filesystem-safe by replacing special characters.
 
     This is particularly useful for checkpoint names that contain characters like
     'hf-hub:timm/ViT-L-16-SigLIP2-256' which need to be converted to something like
@@ -436,8 +436,7 @@ def fssafe(s: str) -> str:
 @beartype.beartype
 class progress:
     def __init__(self, it, *, every: int = 10, desc: str = "progress", total: int = 0):
-        """
-        Wraps an iterable with a logger like tqdm but doesn't use any control codes to manipulate a progress bar, which doesn't work well when your output is redirected to a file. Instead, simple logging statements are used, but it includes quality-of-life features like iteration speed and predicted time to finish.
+        """Wraps an iterable with a logger like tqdm but doesn't use any control codes to manipulate a progress bar, which doesn't work well when your output is redirected to a file. Instead, simple logging statements are used, but it includes quality-of-life features like iteration speed and predicted time to finish.
 
         Args:
             it: Iterable to wrap.
@@ -489,8 +488,7 @@ class progress:
 
 @beartype.beartype
 class batched_idx:
-    """
-    Iterate over (start, end) indices for total_size examples, where end - start is at most batch_size.
+    """Iterate over (start, end) indices for total_size examples, where end - start is at most batch_size.
 
     Args:
         total_size: total number of examples
@@ -501,11 +499,6 @@ class batched_idx:
     """
 
     def __init__(self, total_size: int, batch_size: int):
-        """
-        Args:
-            total_size: total number of examples
-            batch_size: maximum distance between the generated indices
-        """
         self.total_size = total_size
         self.batch_size = batch_size
 
@@ -676,15 +669,17 @@ import beartype
 import chex
 import equinox as eqx
 
-from . import toy
+from . import frozen, toy
 
-Config = toy.Config
+Config = toy.Toy | frozen.Frozen
 
 
 @beartype.beartype
 def make(cfg: Config, key: chex.PRNGKey) -> eqx.Module:
-    if isinstance(cfg, toy.Config):
+    if isinstance(cfg, toy.Toy):
         return toy.Model(cfg, key=key)
+    elif isinstance(cfg, frozen.Frozen):
+        return frozen.Model(cfg, key=key)
     else:
         tp.assert_never(cfg)
 
@@ -712,32 +707,59 @@ from jaxtyping import Array, Float, PyTree, jaxtyped
 @dataclasses.dataclass(frozen=True)
 class Config:
     img_size: int = 224
+    """Image width and height in pixels."""
     patch_size: int = 16
+    """Size of each patch in pixels."""
     in_chans: int = 3
+    """Number of input image channels."""
     pos_embed_rope_base: float = 100.0
+    """Base frequency for RoPE positional encoding."""
     pos_embed_rope_min_period: float | None = None
+    """Minimum period for RoPE positional encoding."""
     pos_embed_rope_max_period: float | None = None
+    """Maximum period for RoPE positional encoding."""
     pos_embed_rope_normalize_coords: tp.Literal["min", "max", "separate"] = "separate"
+    """Coordinate normalization method for RoPE encoding."""
     pos_embed_rope_shift_coords: float | None = None
+    """Shift offset for RoPE coordinates."""
     pos_embed_rope_jitter_coords: float | None = None
+    """Jitter amount for RoPE coordinates."""
     pos_embed_rope_rescale_coords: float | None = None
+    """Rescaling factor for RoPE coordinates."""
     pos_embed_rope_dtype: str = "bf16"
+    """Data type for RoPE positional encoding."""
     embed_dim: int = 768
+    """Embedding dimension for transformer."""
     depth: int = 12
+    """Number of transformer blocks."""
     num_heads: int = 12
+    """Number of attention heads."""
     ffn_ratio: float = 4.0
+    """Feed-forward network expansion ratio."""
     qkv_bias: bool = True
+    """Whether to use bias in QKV projection."""
     drop_path_rate: float = 0.0
+    """Stochastic depth drop rate."""
     layerscale_init: float | None = None
+    """Initial value for layer scale."""
     norm_layer: str = "layernorm"
+    """Type of normalization layer to use."""
     ffn_layer: str = "mlp"
+    """Type of feed-forward network layer."""
     ffn_bias: bool = True
+    """Whether to use bias in feed-forward network."""
     proj_bias: bool = True
+    """Whether to use bias in output projection."""
     n_storage_tokens: int = 0
+    """Number of storage/register tokens."""
     mask_k_bias: bool = False
+    """Whether to mask K bias in attention."""
     untie_cls_and_patch_norms: bool = False
+    """Whether to use separate norms for CLS and patch tokens."""
     untie_global_and_local_cls_norm: bool = False
+    """Whether to use separate norms for global and local CLS tokens."""
     device: tp.Any | None = None
+    """Device for tensor operations."""
 
 
 _norm_layer_lookup = {
@@ -1048,7 +1070,7 @@ class SelfAttention(eqx.Module):
         )
 
     def __call__(
-        self, x_nd: Float[Array, "n_tok d"], rope: Float[Array, "2 n_pos d_head"] | None
+        self, x_nd: Float[Array, "n d"], rope: Float[Array, "2 n_pos d_head"] | None
     ) -> Float[Array, "n d"]:
         n_tok, d = x_nd.shape
 
@@ -1097,7 +1119,7 @@ class SelfAttentionBlock(eqx.Module):
         self.ls2 = LayerScale(cfg.embed_dim, key=k4)
 
     def __call__(
-        self, x_nd: Float[Array, "n d"], rope: Float[Array, "2 n d_head"]
+        self, x_nd: Float[Array, "n d"], rope: Float[Array, "2 n_pos d_head"]
     ) -> Float[Array, "n d"]:
         x_attn_nd = x_nd + self.ls1(self.attn(jax.vmap(self.norm1)(x_nd), rope=rope))
         x_ffn_nd = x_attn_nd + self.ls2(
@@ -1172,7 +1194,7 @@ class VisionTransformer(eqx.Module):
 
 
 @beartype.beartype
-def load(fpath: str) -> VisionTransformer:
+def load(fpath: str | pathlib.Path) -> VisionTransformer:
     with open(fpath, "rb") as fd:
         cfg_dict = json.loads(fd.readline())
         cfg = Config(**cfg_dict)
@@ -1181,19 +1203,11 @@ def load(fpath: str) -> VisionTransformer:
 
 
 @beartype.beartype
-def dump(model: VisionTransformer, fpath: str):
+def dump(model: VisionTransformer, fpath: str | pathlib.Path):
     with open(fpath, "wb") as fd:
         cfg_str = json.dumps(dataclasses.asdict(model.cfg))
         fd.write((cfg_str + "\n").encode("utf-8"))
         eqx.tree_serialise_leaves(fd, model)
-
-
-@beartype.beartype
-def _parse_name_pt(dinov3_ckpt: pathlib.Path) -> str:
-    name_ds, sha = dinov3_ckpt.stem.split("-")
-    *name, pretrain, ds = name_ds.split("_")
-    assert pretrain == "pretrain"
-    return "_".join(name)
 
 
 _PRETRAINED_CFGS = {
@@ -1356,6 +1370,14 @@ _PRETRAINED_CFGS = {
 }
 
 
+@beartype.beartype
+def _parse_name_pt(dinov3_ckpt: pathlib.Path) -> str:
+    name_ds, sha = dinov3_ckpt.stem.split("-")
+    *name, pretrain, ds = name_ds.split("_")
+    assert pretrain == "pretrain"
+    return "_".join(name)
+
+
 def _tokenize(path: str) -> list[str | int]:
     """Split 'blocks.0.mlp.fc1.weight' -> ['blocks', 0, 'mlp', 'fc1', 'weight']"""
     toks = []
@@ -1435,10 +1457,6 @@ def _coerce_to_jax(
     return value
 
 
-def load_torch():
-    pass
-
-
 @beartype.beartype
 def _convert(dinov3_ckpt: pathlib.Path, dump_to: pathlib.Path):
     """Convert DINOv3 checkpoints from PyTorch to Jax/Equinox.
@@ -1486,6 +1504,45 @@ if __name__ == "__main__":
 
     tyro.cli(_convert)
 
+>>>> modeling/frozen.py
+# src/btx/modeling/frozen_features.py
+import dataclasses
+import pathlib
+
+import beartype
+import chex
+import einops
+import equinox as eqx
+from jaxtyping import Array, Float, jaxtyped
+
+from . import dinov3
+
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
+class Frozen:
+    img_size: int = 256
+    dinov3_ckpt: pathlib.Path = pathlib.Path("models/dinov3_vitb16.eqx")
+
+
+@jaxtyped(typechecker=beartype.beartype)
+class Model(eqx.Module):
+    vit: dinov3.VisionTransformer
+    head: eqx.nn.Linear
+
+    def __init__(self, cfg: Frozen, *, key: chex.PRNGKey):
+        self.vit = dinov3.load(cfg.dinov3_ckpt)
+        # Predict 8 coordinates: two measurements x (x, y) x 2 endpoints
+        self.head = eqx.nn.Linear(self.vit.cfg.embed_dim, 8, key=key)
+
+    def __call__(
+        self, x_whc: Float[Array, "w h c"], *, key: chex.PRNGKey | None = None
+    ) -> Float[Array, "2 2 2"]:
+        x_cwh = einops.rearrange(x_whc, "w h c -> c h w")
+        x_d = self.vit(x_cwh)
+        coords = self.head(x_d)
+        return coords.reshape(2, 2, 2)
+
 >>>> modeling/toy.py
 # src/btx/modeling/toy.py
 import dataclasses
@@ -1501,7 +1558,7 @@ from jaxtyping import Array, Float, jaxtyped
 
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
-class Config:
+class Toy:
     img_size: int = 256
     patch: int = 16
     d_model: int = 192
@@ -1545,7 +1602,7 @@ class Model(eqx.Module):
     patch: PatchEmbed
     head: eqx.nn.Linear
 
-    def __init__(self, cfg: Config, *, key: chex.PRNGKey):
+    def __init__(self, cfg: Toy, *, key: chex.PRNGKey):
         k1, k2 = jax.random.split(key)
         self.patch = PatchEmbed(cfg.patch, cfg.d_model, cfg.img_size, key=k1)
         # Predict 8 coordinates: two measurements x (x, y) x 2 endpoints

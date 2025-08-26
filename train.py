@@ -9,7 +9,6 @@ import equinox as eqx
 import grain
 import jax
 import jax.numpy as jnp
-import numpy as np
 import optax
 import tyro
 from jaxtyping import Array, Float, jaxtyped
@@ -17,6 +16,7 @@ from PIL import Image, ImageDraw
 
 import btx.data
 import btx.modeling
+import wandb
 
 log_format = "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
 logging.basicConfig(level=logging.INFO, format=log_format)
@@ -28,77 +28,48 @@ logger = logging.getLogger("train.py")
 class Config:
     seed: int = 17
     """Random seed."""
-    model: btx.modeling.Config = btx.modeling.Config()
+    model: btx.modeling.Config = btx.modeling.frozen.Frozen()
     """Neural network config."""
     data: btx.data.HawaiiConfig = btx.data.HawaiiConfig()
     """Data config."""
     tags: list[str] = dataclasses.field(default_factory=list)
     """List of wandb tags to include."""
-    save_every: int = 1000
+    save_every: int = 200
     """How often to save predictions."""
-    log_every: int = 1000
+    log_every: int = 200
+    """How often to log to stderr."""
+    val_every: int = 1_000
+    """How often to run the validation loop."""
+    n_steps: int = 100_000
+    """Total number of training steps."""
     log_to: pathlib.Path = pathlib.Path("./logs")
     learning_rate: float = 1e-4
-
-
-@dataclasses.dataclass(frozen=True)
-class DecodeRGB(grain.transforms.Map):
-    def map(self, sample: btx.data.hawaii.Sample):
-        # Heavy I/O lives in a transform so workers can parallelize it
-        with Image.open(sample["img_fpath"]) as im:
-            sample["img"] = np.array(im.convert("RGB"))
-        return sample
-
-
-@dataclasses.dataclass(frozen=True)
-class Resize(grain.transforms.Map):
-    size: int = 256
-
-    def map(self, sample: dict[str, object]) -> dict[str, object]:
-        img = sample["img"]
-        orig_h, orig_w = img.shape[:2]
-
-        # simple resize with PIL for brevity
-        img = np.array(Image.fromarray(img).resize((self.size, self.size)))
-        sample["img"] = img.astype(np.float32) / 255.0
-
-        # Rescale the measurements according to the new size
-        # TODO: is it better for data in grain transforms to be numpy or jax arrays?
-        # TODO: if we update the fields, then the save_preds method is messed up.
-        scale_x = self.size / orig_w
-        scale_y = self.size / orig_h
-
-        # elytra_length_px and elytra_width_px are 2x2 arrays: [[x1, y1], [x2, y2]]
-        elytra_length = np.array(sample["elytra_length_px"])
-        elytra_length[:, 0] *= scale_x  # scale x coordinates
-        elytra_length[:, 1] *= scale_y  # scale y coordinates
-        sample["elytra_length_px"] = elytra_length
-
-        elytra_width = np.array(sample["elytra_width_px"])
-        elytra_width[:, 0] *= scale_x  # scale x coordinates
-        elytra_width[:, 1] *= scale_y  # scale y coordinates
-        sample["elytra_width_px"] = elytra_width
-
-        return sample
+    wandb_project: str = "beetle-traits"
+    wandb_entity: str = "samuelstevens"
+    pck_rs: list[int] = dataclasses.field(default_factory=lambda: [1, 2, 4, 8])
+    slurm_acct: str = ""
+    slurm_partition: str = ""
+    n_hours: float = 2.0
 
 
 @beartype.beartype
 def make_dataloader(cfg: btx.data.HawaiiConfig):
     source = btx.data.HawaiiDataset(cfg)
     shuffle = cfg.split == "train"
+    n_epochs = None if cfg.split == "train" else 1
     sampler = grain.samplers.IndexSampler(
-        num_records=len(source), shuffle=shuffle, num_epochs=None, seed=cfg.seed
+        num_records=len(source), shuffle=shuffle, num_epochs=n_epochs, seed=cfg.seed
     )
     ops = [
-        DecodeRGB(),
-        Resize(size=256),
-        grain.transforms.Batch(batch_size=32, drop_remainder=True),
+        btx.data.utils.DecodeRGB(),
+        btx.data.utils.Resize(),
+        grain.transforms.Batch(batch_size=2, drop_remainder=True),
     ]
     loader = grain.DataLoader(
         data_source=source,
         sampler=sampler,
         operations=ops,
-        worker_count=0,  # >0 -> do work in child processes
+        worker_count=cfg.n_workers,
         worker_buffer_size=2,  # per-worker prefetch of output batches
         read_options=grain.ReadOptions(num_threads=2, prefetch_buffer_size=64),
     )
@@ -113,10 +84,22 @@ def compute_loss(
     tgts: Float[Array, "batch 2 2 2"],
 ) -> Float[Array, ""]:
     preds = jax.vmap(model)(imgs)
-    # jax.debug.print("preds={preds}, tgts={tgts}", preds=preds[0], tgts=tgts[0])
     loss = jnp.mean((preds - tgts) ** 2)
-
     return loss
+
+
+@jaxtyped(typechecker=beartype.beartype)
+def compute_metrics(
+    cfg: Config, preds: Float[Array, "batch 2 2 2"], batch: dict[str, object]
+) -> dict[str, Float[Array, ""]]:
+    breakpoint()
+    mse = jnp.mean((preds - tgts) ** 2)
+    diffs = jnp.abs(preds - tgts)
+    # TODO: add a metric that tracks the difference in predicted line difference.
+    mae = jnp.mean(diffs)
+    pck = {f"pck@{r}": jnp.sum(diffs < r) for r in cfg.pck_rs}
+
+    return {"mse": mse, "mae": mae, **pck}
 
 
 @jaxtyped(typechecker=beartype.beartype)
@@ -137,24 +120,24 @@ def step_model(
 
 
 @jaxtyped(typechecker=beartype.beartype)
-def save_preds(
-    cfg: Config, step: int, batch: dict[str, object], preds: Float[Array, "batch 2 2 2"]
-):
-    # Create output directory if it doesn't exist
-    output_dir = cfg.log_to / "images"
-    output_dir.mkdir(parents=True, exist_ok=True)
-
+def plot_preds(
+    batch: dict[str, object], preds: Float[Array, "batch 2 2 2"]
+) -> tuple[str, Image.Image]:
     # Process first image in batch
     img_fpath = batch["img_fpath"][0]
     img = Image.open(img_fpath)
 
     # Get ground truth points
-    gt_length_px = batch["elytra_length_px"][0]
-    gt_width_px = batch["elytra_width_px"][0]
+    gt_length_px, gt_width_px = batch["points_px"][0]
+
+    scale_x, scale_y = batch["scale"][0]
+    tgts_px = batch["tgt"][0].copy()
+    tgts_px[:, :, 0] /= scale_x
+    tgts_px[:, :, 1] /= scale_y
 
     # Get predicted points
-    pred_length_px = preds[0, 0]
-    pred_width_px = preds[0, 1]
+    pred_px = preds[0].at[:, :, 0].divide(scale_x).at[:, :, 1].divide(scale_y)
+    pred_length_px, pred_width_px = pred_px
 
     # Draw on image
     draw = ImageDraw.Draw(img)
@@ -191,36 +174,90 @@ def save_preds(
     # Extract individual ID from filepath
     beetle_id = batch["beetle_id"][0]
 
-    # Save image
-    output_path = output_dir / f"step{step}_{beetle_id}.png"
-    img.save(output_path)
-    logger.info(f"Saved predictions to {output_path}")
+    return beetle_id, img
 
 
 @beartype.beartype
-def main(cfg: Config):
+def train(cfg: Config):
     key = jax.random.key(seed=cfg.seed)
+    val_cfg = dataclasses.replace(cfg.data, split="val", seed=cfg.seed)
     train_cfg = dataclasses.replace(cfg.data, split="train", seed=cfg.seed)
+    val_dl = make_dataloader(val_cfg)
     train_dl = make_dataloader(train_cfg)
+
     model = btx.modeling.make(cfg.model, key)
 
     optim = optax.sgd(learning_rate=cfg.learning_rate)
     state = optim.init(eqx.filter([model], eqx.is_inexact_array))
 
+    run = wandb.init(
+        project=cfg.wandb_project,
+        entity=cfg.wandb_entity,
+        config=dataclasses.asdict(cfg),
+        tags=cfg.tags,
+    )
+
     # Training
     batch = next(iter(train_dl))
-    for b in range(100_000):
+    for step, _ in enumerate(train_dl):
         imgs = jnp.array(batch["img"])
-        tgts = jnp.stack([batch["elytra_length_px"], batch["elytra_width_px"]], axis=1)
+        tgts = jnp.array(batch["tgt"])
 
         model, new_state, loss = step_model(model, optim, state, imgs, tgts)
 
-        if b % cfg.save_every == 0:
+        if step % cfg.save_every == 0:
             preds = jax.vmap(model)(imgs)
-            save_preds(cfg, b, batch, preds)
+            beetle_id, img = plot_preds(batch, preds)
+            metrics = {"step": step, "train/loss": loss.item()}
+            run.log({**metrics, f"images/train/beetle{beetle_id}": wandb.Image(img)})
 
-        if b % cfg.log_every == 0:
-            print(b, loss.item())
+        if step % cfg.log_every == 0:
+            metrics = {"step": step, "train/loss": loss.item()}
+            run.log(metrics)
+            logger.info("Step: %d %s", step, metrics)
+
+        # if step % cfg.val_every == 0:
+        #     metrics = []
+        #     for batch in val_dl:
+        #         imgs = jnp.array(batch["img"])
+        #         tgts = jnp.array(batch["tgt"])
+
+        #         preds = jax.vmap(model)(imgs)
+        #         metrics.append(compute_metrics(cfg, preds, tgts))
+
+        #     metrics = {
+        #         f"val/{k}": jnp.array([dct[k] for dct in metrics]).mean().item()
+        #         for k in metrics[0]
+        #     }
+        #     beetle_id, img = save_preds(cfg, step, batch, preds)
+        #     run.log({**metrics, f"images/val/beetle{beetle_id}": wandb.Image(img)})
+
+        if step >= cfg.n_steps:
+            break
+
+
+@beartype.beartype
+def main(cfg: Config):
+    if cfg.slurm_acct:
+        import submitit
+
+        executor = submitit.SlurmExecutor(folder=cfg.log_to)
+        executor.update_parameters(
+            time=int(cfg.n_hours * 60),
+            partition=cfg.slurm_partition,
+            gpus_per_node=1,
+            ntasks_per_node=1,
+            cpus_per_task=cfg.data.n_workers + 4,
+            stderr_to_stdout=True,
+            account=cfg.slurm_acct,
+        )
+
+    else:
+        executor = submitit.DebugExecutor(folder=cfg.log_to)
+
+    job = executor.submit(train, cfg)
+    logger.info("Running job %s", job.job_id)
+    job.result()
 
 
 if __name__ == "__main__":

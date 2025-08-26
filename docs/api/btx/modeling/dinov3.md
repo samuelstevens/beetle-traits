@@ -7,13 +7,10 @@ Functions
 `apply_rope(x: jaxtyping.Float[Array, 'n_heads n d_head'], sin: jaxtyping.Float[Array, 'n d_head'], cos: jaxtyping.Float[Array, 'n d_head']) ‑> jaxtyping.Float[Array, 'n_heads n d_head']`
 :   
 
-`dump(model: btx.modeling.dinov3.VisionTransformer, fpath: str)`
+`dump(model: btx.modeling.dinov3.VisionTransformer, fpath: str | pathlib.Path)`
 :   
 
-`load(fpath: str) ‑> btx.modeling.dinov3.VisionTransformer`
-:   
-
-`load_torch()`
+`load(fpath: str | pathlib.Path) ‑> btx.modeling.dinov3.VisionTransformer`
 :   
 
 `rope_fn(q_nhd: jaxtyping.Float[Array, 'n n_heads d_head'], k_nhd: jaxtyping.Float[Array, 'n n_heads d_head'], rope_2pd: jaxtyping.Float[Array, '2 n_pos d_head']) ‑> tuple[jaxtyping.Float[Array, 'n n_heads d_head'], jaxtyping.Float[Array, 'n n_heads d_head']]`
@@ -31,85 +28,85 @@ Classes
     ### Instance variables
 
     `depth: int`
-    :
+    :   Number of transformer blocks.
 
     `device: typing.Any | None`
-    :
+    :   Device for tensor operations.
 
     `drop_path_rate: float`
-    :
+    :   Stochastic depth drop rate.
 
     `embed_dim: int`
-    :
+    :   Embedding dimension for transformer.
 
     `ffn_bias: bool`
-    :
+    :   Whether to use bias in feed-forward network.
 
     `ffn_layer: str`
-    :
+    :   Type of feed-forward network layer.
 
     `ffn_ratio: float`
-    :
+    :   Feed-forward network expansion ratio.
 
     `img_size: int`
-    :
+    :   Image width and height in pixels.
 
     `in_chans: int`
-    :
+    :   Number of input image channels.
 
     `layerscale_init: float | None`
-    :
+    :   Initial value for layer scale.
 
     `mask_k_bias: bool`
-    :
+    :   Whether to mask K bias in attention.
 
     `n_storage_tokens: int`
-    :
+    :   Number of storage/register tokens.
 
     `norm_layer: str`
-    :
+    :   Type of normalization layer to use.
 
     `num_heads: int`
-    :
+    :   Number of attention heads.
 
     `patch_size: int`
-    :
+    :   Size of each patch in pixels.
 
     `pos_embed_rope_base: float`
-    :
+    :   Base frequency for RoPE positional encoding.
 
     `pos_embed_rope_dtype: str`
-    :
+    :   Data type for RoPE positional encoding.
 
     `pos_embed_rope_jitter_coords: float | None`
-    :
+    :   Jitter amount for RoPE coordinates.
 
     `pos_embed_rope_max_period: float | None`
-    :
+    :   Maximum period for RoPE positional encoding.
 
     `pos_embed_rope_min_period: float | None`
-    :
+    :   Minimum period for RoPE positional encoding.
 
     `pos_embed_rope_normalize_coords: Literal['min', 'max', 'separate']`
-    :
+    :   Coordinate normalization method for RoPE encoding.
 
     `pos_embed_rope_rescale_coords: float | None`
-    :
+    :   Rescaling factor for RoPE coordinates.
 
     `pos_embed_rope_shift_coords: float | None`
-    :
+    :   Shift offset for RoPE coordinates.
 
     `proj_bias: bool`
-    :
+    :   Whether to use bias in output projection.
 
     `qkv_bias: bool`
-    :
+    :   Whether to use bias in QKV projection.
 
     `untie_cls_and_patch_norms: bool`
-    :
+    :   Whether to use separate norms for CLS and patch tokens.
 
     `untie_global_and_local_cls_norm: bool`
-    :
+    :   Whether to use separate norms for global and local CLS tokens.
 
 `LayerScale(dim: int, *, key: jax.Array)`
 :   LayerScale(dim: int, *, key: jax.Array)
