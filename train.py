@@ -10,7 +10,6 @@ import grain
 import jax
 import jax.numpy as jnp
 import optax
-import tyro
 from jaxtyping import Array, Float, jaxtyped
 from PIL import Image, ImageDraw
 
@@ -78,23 +77,29 @@ def make_dataloader(cfg: btx.data.HawaiiConfig):
 
 
 @jaxtyped(typechecker=beartype.beartype)
-def compute_loss(
+class Aux(eqx.Module):
+    loss: Float[Array, ""]
+    preds: Float[Array, "batch 2 2 2"]
+
+
+@jaxtyped(typechecker=beartype.beartype)
+def loss_and_aux(
     model: eqx.Module,
     imgs: Float[Array, "batch width height channels"],
     tgts: Float[Array, "batch 2 2 2"],
-) -> Float[Array, ""]:
+) -> tuple[Float[Array, ""], Aux]:
     preds = jax.vmap(model)(imgs)
     loss = jnp.mean((preds - tgts) ** 2)
-    return loss
+    return loss, Aux(loss, preds)
 
 
 @jaxtyped(typechecker=beartype.beartype)
 def compute_metrics(
-    cfg: Config, preds: Float[Array, "batch 2 2 2"], batch: dict[str, object]
+    cfg: Config, batch: dict[str, object], aux: Aux
 ) -> dict[str, Float[Array, ""]]:
-    breakpoint()
-    mse = jnp.mean((preds - tgts) ** 2)
-    diffs = jnp.abs(preds - tgts)
+    tgts = jnp.array(batch["tgt"])
+    mse = jnp.mean((aux.preds - tgts) ** 2)
+    diffs = jnp.abs(aux.preds - tgts)
     # TODO: add a metric that tracks the difference in predicted line difference.
     mae = jnp.mean(diffs)
     pck = {f"pck@{r}": jnp.sum(diffs < r) for r in cfg.pck_rs}
@@ -110,13 +115,15 @@ def step_model(
     state: tp.Any,
     imgs: Float[Array, "batch width height channels"],
     tgts: Float[Array, "batch 2 2 2"],
-) -> tuple[eqx.Module, tp.Any, Float[Array, ""]]:
-    loss, grads = eqx.filter_value_and_grad(compute_loss)(model, imgs, tgts)
-    (updates,), new_state = optim.update([grads], state, [model])
+) -> tuple[eqx.Module, tp.Any, Aux]:
+    (loss, aux), grads = eqx.filter_value_and_grad(loss_and_aux, has_aux=True)(
+        model, imgs, tgts
+    )
+    updates, new_state = optim.update(grads, state, model)
 
     model = eqx.apply_updates(model, updates)
 
-    return model, new_state, loss
+    return model, new_state, aux
 
 
 @jaxtyped(typechecker=beartype.beartype)
@@ -177,6 +184,23 @@ def plot_preds(
     return beetle_id, img
 
 
+def validate(cfg: Config, model: eqx.Module, val_dl):
+    metrics = []
+    for batch in val_dl:
+        imgs = jnp.array(batch["img"])
+        tgts = jnp.array(batch["tgt"])
+
+        loss, aux = loss_and_aux(model, imgs, tgts)
+        metrics.append(compute_metrics(cfg, batch, aux))
+
+    metrics = {
+        f"val/{k}": jnp.array([dct[k] for dct in metrics]).mean().item()
+        for k in metrics[0]
+    }
+    beetle_id, img = plot_preds(batch, aux.preds)
+    return {**metrics, f"images/val/beetle{beetle_id}": wandb.Image(img)}
+
+
 @beartype.beartype
 def train(cfg: Config):
     key = jax.random.key(seed=cfg.seed)
@@ -195,70 +219,33 @@ def train(cfg: Config):
         entity=cfg.wandb_entity,
         config=dataclasses.asdict(cfg),
         tags=cfg.tags,
+        mode="disabled",
     )
 
     # Training
-    batch = next(iter(train_dl))
-    for step, _ in enumerate(train_dl):
+    for step, batch in enumerate(train_dl):
         imgs = jnp.array(batch["img"])
         tgts = jnp.array(batch["tgt"])
 
-        model, new_state, loss = step_model(model, optim, state, imgs, tgts)
+        model, new_state, aux = step_model(model, optim, state, imgs, tgts)
 
         if step % cfg.save_every == 0:
-            preds = jax.vmap(model)(imgs)
-            beetle_id, img = plot_preds(batch, preds)
-            metrics = {"step": step, "train/loss": loss.item()}
-            run.log({**metrics, f"images/train/beetle{beetle_id}": wandb.Image(img)})
+            beetle_id, img = plot_preds(batch, aux.preds)
+            metrics = {"step": step, "train/loss": aux.loss.item()}
+            run.log(
+                {**metrics, f"images/train/beetle{beetle_id}": wandb.Image(img)},
+                step=step,
+            )
 
         if step % cfg.log_every == 0:
-            metrics = {"step": step, "train/loss": loss.item()}
-            run.log(metrics)
+            metrics = {"step": step, "train/loss": aux.loss.item()}
+            run.log(metrics, step=step)
             logger.info("Step: %d %s", step, metrics)
 
-        # if step % cfg.val_every == 0:
-        #     metrics = []
-        #     for batch in val_dl:
-        #         imgs = jnp.array(batch["img"])
-        #         tgts = jnp.array(batch["tgt"])
-
-        #         preds = jax.vmap(model)(imgs)
-        #         metrics.append(compute_metrics(cfg, preds, tgts))
-
-        #     metrics = {
-        #         f"val/{k}": jnp.array([dct[k] for dct in metrics]).mean().item()
-        #         for k in metrics[0]
-        #     }
-        #     beetle_id, img = save_preds(cfg, step, batch, preds)
-        #     run.log({**metrics, f"images/val/beetle{beetle_id}": wandb.Image(img)})
+        if step % cfg.val_every == 0:
+            metrics = validate(cfg, model, val_dl)
+            run.log(metrics, step=step)
+            logger.info("Validation: %d %s", step, metrics)
 
         if step >= cfg.n_steps:
             break
-
-
-@beartype.beartype
-def main(cfg: Config):
-    import submitit
-
-    if cfg.slurm_acct:
-        executor = submitit.SlurmExecutor(folder=cfg.log_to)
-        executor.update_parameters(
-            time=int(cfg.n_hours * 60),
-            partition=cfg.slurm_partition,
-            gpus_per_node=1,
-            ntasks_per_node=1,
-            cpus_per_task=cfg.data.n_workers + 4,
-            stderr_to_stdout=True,
-            account=cfg.slurm_acct,
-        )
-
-    else:
-        executor = submitit.DebugExecutor(folder=cfg.log_to)
-
-    job = executor.submit(train, cfg)
-    logger.info("Running job %s", job.job_id)
-    job.result()
-
-
-if __name__ == "__main__":
-    main(tyro.cli(Config))

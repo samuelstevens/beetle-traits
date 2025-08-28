@@ -104,3 +104,4 @@ Let's adapt DINOv3 to Jax.
 
 I have a Jax version of DINOv3.
 Now I need to feed its patch-level features as input to my dumb little MLP for predicing (x, y).
+This seems to be working quite well.
