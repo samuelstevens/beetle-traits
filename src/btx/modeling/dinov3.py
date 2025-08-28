@@ -159,7 +159,6 @@ class PatchEmbed(eqx.Module):
 
     img_size: tuple[int, int]
     patch_size: tuple[int, int]
-    num_patches: int
     in_chans: int
     embed_dim: int
     proj: eqx.nn.Conv2d
@@ -174,11 +173,9 @@ class PatchEmbed(eqx.Module):
     ) -> None:
         image_HW = (img_size, img_size)
         patch_HW = (patch_size, patch_size)
-        patch_grid_size = (image_HW[0] // patch_HW[0], image_HW[1] // patch_HW[1])
 
         self.img_size = image_HW
         self.patch_size = patch_HW
-        self.num_patches = patch_grid_size[0] * patch_grid_size[1]
 
         self.in_chans = in_chans
         self.embed_dim = embed_dim

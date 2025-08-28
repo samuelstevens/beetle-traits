@@ -238,9 +238,9 @@ def train(cfg: Config):
 
 @beartype.beartype
 def main(cfg: Config):
-    if cfg.slurm_acct:
-        import submitit
+    import submitit
 
+    if cfg.slurm_acct:
         executor = submitit.SlurmExecutor(folder=cfg.log_to)
         executor.update_parameters(
             time=int(cfg.n_hours * 60),
