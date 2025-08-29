@@ -64,5 +64,8 @@ Classes
     `img_fpath: str`
     :
 
-    `points_px: jaxtyping.Float[ndarray, '2 2 2']`
+    `points_px: jaxtyping.Float[ndarray, 'lines 2 2']`
     :   {width, length} x two points x {x, y}.
+
+    `scalebar_px: jaxtyping.Float[ndarray, '2 2']`
+    :   two points x {x, y}.

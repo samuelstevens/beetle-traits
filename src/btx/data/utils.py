@@ -12,8 +12,10 @@ from PIL import Image
 class Sample(tp.TypedDict):
     img_fpath: str
 
-    points_px: Float[np.ndarray, "2 2 2"]
+    points_px: Float[np.ndarray, "lines 2 2"]
     """{width, length} x two points x {x, y}."""
+    scalebar_px: Float[np.ndarray, "2 2"]
+    """two points x {x, y}."""
 
     # Metadata
     beetle_id: str

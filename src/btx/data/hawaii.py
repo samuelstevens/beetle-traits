@@ -91,6 +91,8 @@ class Config:
     """Minimum beetles per species in validation."""
     n_workers: int = 4
 
+    batch_size: int = 16
+
     def __post_init__(self):
         # TODO: Check that hf_root exists and is a directory
         # TODO: Check that annotations.json exists and is a file.
@@ -238,11 +240,14 @@ class Dataset(grain.sources.RandomAccessDataSource):
 
         elytra_width_px = None
         elytra_length_px = None
+        scalebar_px = None
         for measurement in row["measurements"]:
             if measurement["measurement_type"] == "elytra_max_length":
                 elytra_length_px = measurement["polyline_px"]
             if measurement["measurement_type"] == "elytra_max_width":
                 elytra_width_px = measurement["polyline_px"]
+            if measurement["measurement_type"] == "scalebar":
+                scalebar_px = measurement["polyline_px"]
 
         if elytra_width_px is None:
             self.logger.error(
@@ -258,6 +263,13 @@ class Dataset(grain.sources.RandomAccessDataSource):
                 row["beetle_position"],
             )
             elytra_length_px = [0.0, 0.0, 0.0, 0.0]
+        if scalebar_px is None:
+            self.logger.error(
+                "Image %s beetle %d has no scalebar.",
+                row["group_img_rel_path"],
+                row["beetle_position"],
+            )
+            scalebar_px = [0.0, 0.0, 1.0, 1.0]
 
         if self.cfg.include_polylines:
             raise NotImplementedError()
@@ -265,6 +277,7 @@ class Dataset(grain.sources.RandomAccessDataSource):
         return utils.Sample(
             img_fpath=str(fpath),
             points_px=np.array(elytra_width_px + elytra_length_px).reshape(2, 2, 2),
+            scalebar_px=np.array(scalebar_px).reshape(2, 2),
             beetle_id=row["individual_id"],
             beetle_position=row["beetle_position"],
             group_img_basename=row["group_img_basename"],

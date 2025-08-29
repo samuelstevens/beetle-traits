@@ -212,9 +212,6 @@ Classes
     `in_chans: int`
     :
 
-    `num_patches: int`
-    :
-
     `patch_size: tuple[int, int]`
     :
 

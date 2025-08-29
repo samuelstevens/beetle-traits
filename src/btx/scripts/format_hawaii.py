@@ -1021,6 +1021,7 @@ def main(cfg: Config) -> int:
 
         # Process each trait type
         trait_types = {
+            "coords_scalebar": "scalebar",
             "coords_elytra_max_length": "elytra_max_length",
             "coords_basal_pronotum_width": "basal_pronotum_width",
             "coords_elytra_max_width": "elytra_max_width",

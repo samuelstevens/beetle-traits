@@ -60,13 +60,16 @@ Testing Strategy:
 Classes
 -------
 
-`Config(hf_root: pathlib.Path = PosixPath('data/hawaii'), annotations: pathlib.Path = PosixPath('data/hawaii-formatted/annotations.json'), include_polylines: bool = True, split: Literal['train', 'val'] = 'train', seed: int = 0, min_val_groups: int = 2, min_val_beetles: int = 20, n_workers: int = 4)`
-:   Config(hf_root: pathlib.Path = PosixPath('data/hawaii'), annotations: pathlib.Path = PosixPath('data/hawaii-formatted/annotations.json'), include_polylines: bool = True, split: Literal['train', 'val'] = 'train', seed: int = 0, min_val_groups: int = 2, min_val_beetles: int = 20, n_workers: int = 4)
+`Config(hf_root: pathlib.Path = PosixPath('data/hawaii'), annotations: pathlib.Path = PosixPath('data/hawaii-formatted/annotations.json'), include_polylines: bool = True, split: Literal['train', 'val'] = 'train', seed: int = 0, min_val_groups: int = 2, min_val_beetles: int = 20, n_workers: int = 4, batch_size: int = 16)`
+:   Config(hf_root: pathlib.Path = PosixPath('data/hawaii'), annotations: pathlib.Path = PosixPath('data/hawaii-formatted/annotations.json'), include_polylines: bool = True, split: Literal['train', 'val'] = 'train', seed: int = 0, min_val_groups: int = 2, min_val_beetles: int = 20, n_workers: int = 4, batch_size: int = 16)
 
     ### Instance variables
 
     `annotations: pathlib.Path`
     :   Path to the annotations.json file made by running format_hawaii.py.
+
+    `batch_size: int`
+    :
 
     `hf_root: pathlib.Path`
     :   Path to the dataset root downloaded from HuggingFace.

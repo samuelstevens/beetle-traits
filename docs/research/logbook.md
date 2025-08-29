@@ -105,3 +105,14 @@ Let's adapt DINOv3 to Jax.
 I have a Jax version of DINOv3.
 Now I need to feed its patch-level features as input to my dumb little MLP for predicing (x, y).
 This seems to be working quite well.
+
+# 08/28/2025
+
+I need to measure line and point error in px and cm during training.
+I also need to measure mean, median and maximum error in cm over the entire validation set.
+Once I do this, then I can train a toy model on Slurm.
+Then I can train a DINOV3 model on Slurm.
+Each of these can run for 6 hours.
+Then we can discuss ways to make this system much stronger.
+This includes things like additional data (BeetlePalooza), better objectives (Gaussian heatmap regression), better decoders (upsampling?), better models (EoMT) and better hyperparameters.
+We also need to annotate some of the BioRepo data as a test set.

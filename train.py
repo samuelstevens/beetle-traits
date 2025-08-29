@@ -5,10 +5,12 @@ import pathlib
 import typing as tp
 
 import beartype
+import einops
 import equinox as eqx
 import grain
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 from jaxtyping import Array, Float, jaxtyped
 from PIL import Image, ImageDraw
@@ -20,6 +22,8 @@ import wandb
 log_format = "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
 logging.basicConfig(level=logging.INFO, format=log_format)
 logger = logging.getLogger("train.py")
+
+_NUMERIC_KINDS = set("biufc")  # bool,int,uint,float,complex
 
 
 @beartype.beartype
@@ -62,7 +66,7 @@ def make_dataloader(cfg: btx.data.HawaiiConfig):
     ops = [
         btx.data.utils.DecodeRGB(),
         btx.data.utils.Resize(),
-        grain.transforms.Batch(batch_size=2, drop_remainder=True),
+        grain.transforms.Batch(batch_size=cfg.batch_size, drop_remainder=True),
     ]
     loader = grain.DataLoader(
         data_source=source,
@@ -76,51 +80,66 @@ def make_dataloader(cfg: btx.data.HawaiiConfig):
     return loader
 
 
+def point_mae(preds_bl22, tgts_bl22):
+    # flatten endpoints
+    pred_bl2 = einops.rearrange(
+        preds_bl22, "batch lines points coords -> (batch lines) points coords"
+    )
+    tgts_bl2 = einops.rearrange(
+        tgts_bl22, "batch lines points coords -> (batch lines) points coords"
+    )
+    dists_bl = jnp.linalg.norm(pred_bl2 - tgts_bl2, axis=-1)
+    mae_b = dists_bl.mean(axis=1)  # [B]
+
+
 @jaxtyped(typechecker=beartype.beartype)
 class Aux(eqx.Module):
     loss: Float[Array, ""]
     preds: Float[Array, "batch 2 2 2"]
+    mse: Float[Array, ""]
+    point_mae_px: Float[Array, ""]
+
+    def metrics(self):
+        return {"loss": self.loss, "mse": self.mse, "point_mae_px": self.point_mae_px}
 
 
 @jaxtyped(typechecker=beartype.beartype)
+@eqx.filter_jit()
 def loss_and_aux(
-    model: eqx.Module,
-    imgs: Float[Array, "batch width height channels"],
-    tgts: Float[Array, "batch 2 2 2"],
+    model: eqx.Module, batch: dict[str, Array]
 ) -> tuple[Float[Array, ""], Aux]:
-    preds = jax.vmap(model)(imgs)
-    loss = jnp.mean((preds - tgts) ** 2)
-    return loss, Aux(loss, preds)
+    preds = jax.vmap(model)(batch["img"])
+    mse = jnp.mean((preds - batch["tgt"]) ** 2)
+
+    # Metrics
+    scale_x, scale_y = jnp.unstack(batch["scale"], axis=-1)
+    scale_x = jnp.expand_dims(scale_x, (1, 2))
+    scale_y = jnp.expand_dims(scale_y, (1, 2))
+    preds_px = preds.at[:, :, :, 0].divide(scale_x).at[:, :, :, 1].divide(scale_y)
+    tgts_px = batch["tgt"].at[:, :, :, 0].divide(scale_x).at[:, :, :, 1].divide(scale_y)
+
+    # Point MAE px
+    point_mae_px = jnp.linalg.norm(preds_px - tgts_px, axis=-1).mean()
+
+    # point_mae_cm
+    # line_len_mae_px
+    # line_len_mae_cm
+
+    return mse, Aux(mse, preds, mse, point_mae_px)
 
 
 @jaxtyped(typechecker=beartype.beartype)
-def compute_metrics(
-    cfg: Config, batch: dict[str, object], aux: Aux
-) -> dict[str, Float[Array, ""]]:
-    tgts = jnp.array(batch["tgt"])
-    mse = jnp.mean((aux.preds - tgts) ** 2)
-    diffs = jnp.abs(aux.preds - tgts)
-    # TODO: add a metric that tracks the difference in predicted line difference.
-    mae = jnp.mean(diffs)
-    pck = {f"pck@{r}": jnp.sum(diffs < r) for r in cfg.pck_rs}
-
-    return {"mse": mse, "mae": mae, **pck}
-
-
-@jaxtyped(typechecker=beartype.beartype)
-@eqx.filter_jit(donate="all")
+@eqx.filter_jit()
 def step_model(
     model: eqx.Module,
     optim: optax.GradientTransformation,
     state: tp.Any,
-    imgs: Float[Array, "batch width height channels"],
-    tgts: Float[Array, "batch 2 2 2"],
+    batch: dict[str, Array],
 ) -> tuple[eqx.Module, tp.Any, Aux]:
-    (loss, aux), grads = eqx.filter_value_and_grad(loss_and_aux, has_aux=True)(
-        model, imgs, tgts
-    )
-    updates, new_state = optim.update(grads, state, model)
+    loss_fn = eqx.filter_value_and_grad(loss_and_aux, has_aux=True)
+    (loss, aux), grads = loss_fn(model, batch)
 
+    updates, new_state = optim.update(grads, state, model)
     model = eqx.apply_updates(model, updates)
 
     return model, new_state, aux
@@ -128,19 +147,18 @@ def step_model(
 
 @jaxtyped(typechecker=beartype.beartype)
 def plot_preds(
-    batch: dict[str, object], preds: Float[Array, "batch 2 2 2"]
+    batch: dict[str, Array],
+    metadata: dict[str, object],
+    preds: Float[Array, "batch 2 2 2"],
 ) -> tuple[str, Image.Image]:
     # Process first image in batch
-    img_fpath = batch["img_fpath"][0]
+    img_fpath = metadata["img_fpath"][0]
     img = Image.open(img_fpath)
 
     # Get ground truth points
     gt_length_px, gt_width_px = batch["points_px"][0]
 
     scale_x, scale_y = batch["scale"][0]
-    tgts_px = batch["tgt"][0].copy()
-    tgts_px[:, :, 0] /= scale_x
-    tgts_px[:, :, 1] /= scale_y
 
     # Get predicted points
     pred_px = preds[0].at[:, :, 0].divide(scale_x).at[:, :, 1].divide(scale_y)
@@ -179,26 +197,48 @@ def plot_preds(
         draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=(255, 0, 0))
 
     # Extract individual ID from filepath
-    beetle_id = batch["beetle_id"][0]
+    beetle_id = metadata["beetle_id"][0]
 
     return beetle_id, img
 
 
+@beartype.beartype
 def validate(cfg: Config, model: eqx.Module, val_dl):
     metrics = []
     for batch in val_dl:
-        imgs = jnp.array(batch["img"])
-        tgts = jnp.array(batch["tgt"])
-
-        loss, aux = loss_and_aux(model, imgs, tgts)
-        metrics.append(compute_metrics(cfg, batch, aux))
+        batch, metadata = to_device(batch)
+        loss, aux = loss_and_aux(model, batch)
+        metrics.append(aux.metrics())
 
     metrics = {
         f"val/{k}": jnp.array([dct[k] for dct in metrics]).mean().item()
         for k in metrics[0]
     }
-    beetle_id, img = plot_preds(batch, aux.preds)
+    beetle_id, img = plot_preds(batch, metadata, aux.preds)
     return {**metrics, f"images/val/beetle{beetle_id}": wandb.Image(img)}
+
+
+def is_device_array(x: object) -> bool:
+    if isinstance(x, (jax.Array, np.ndarray)):
+        dt = getattr(x, "dtype", None)
+        if dt is None:
+            return False
+        return (
+            np.issubdtype(dt, np.bool_)
+            or np.issubdtype(dt, np.integer)
+            or np.issubdtype(dt, np.unsignedinteger)
+            or np.issubdtype(dt, np.floating)
+            or np.issubdtype(dt, np.complexfloating)
+        )
+    return False
+
+
+def to_device(batch: dict[str, object], device=None) -> tuple:
+    numeric = {k: v for k, v in batch.items() if is_device_array(v)}
+    aux = {k: v for k, v in batch.items() if not is_device_array(v)}
+    # device_put works on pytrees; leaves become jax.Arrays on the target device
+    numeric = jax.device_put(numeric, device)
+    return numeric, aux
 
 
 @beartype.beartype
@@ -224,18 +264,17 @@ def train(cfg: Config):
 
     # Training
     for step, batch in enumerate(train_dl):
-        imgs = jnp.array(batch["img"])
-        tgts = jnp.array(batch["tgt"])
-
-        model, new_state, aux = step_model(model, optim, state, imgs, tgts)
+        batch, metadata = to_device(batch)
+        model, state, aux = step_model(model, optim, state, batch)
 
         if step % cfg.save_every == 0:
-            beetle_id, img = plot_preds(batch, aux.preds)
-            metrics = {"step": step, "train/loss": aux.loss.item()}
-            run.log(
-                {**metrics, f"images/train/beetle{beetle_id}": wandb.Image(img)},
-                step=step,
-            )
+            beetle_id, img = plot_preds(batch, metadata, aux.preds)
+            metrics = {
+                f"train/{key}": value.item() for key, value in aux.metrics().items()
+            }
+            metrics["step"] = step
+            metrics[f"images/train/beetle{beetle_id}"] = wandb.Image(img)
+            run.log(metrics, step=step)
 
         if step % cfg.log_every == 0:
             metrics = {"step": step, "train/loss": aux.loss.item()}
