@@ -80,6 +80,10 @@ class Config:
     """Path to the annotations.json file made by running format_hawaii.py."""
     include_polylines: bool = True
     """Whether to include polylines (lines with more than 2 points)."""
+    n_workers: int = 4
+    """Number of dataloader workers."""
+    batch_size: int = 16
+    """Batch size."""
     split: tp.Literal["train", "val"] = "train"
     """Which split."""
     # Split-related configuration.
@@ -89,9 +93,6 @@ class Config:
     """Minimum group images per species in validation."""
     min_val_beetles: int = 20
     """Minimum beetles per species in validation."""
-    n_workers: int = 4
-
-    batch_size: int = 16
 
     def __post_init__(self):
         # TODO: Check that hf_root exists and is a directory

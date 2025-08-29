@@ -1012,8 +1012,6 @@ def main(cfg: Config) -> int:
 
         # Add trait polylines if available
         if trait_row.is_empty():
-            ann_dict["measurements"] = []
-            json_data.append(ann_dict)
             continue
 
         measurements = []

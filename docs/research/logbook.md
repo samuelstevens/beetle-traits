@@ -116,3 +116,17 @@ Each of these can run for 6 hours.
 Then we can discuss ways to make this system much stronger.
 This includes things like additional data (BeetlePalooza), better objectives (Gaussian heatmap regression), better decoders (upsampling?), better models (EoMT) and better hyperparameters.
 We also need to annotate some of the BioRepo data as a test set.
+
+# 08/29/2025
+
+- [done] Point MAE px
+- [done] Point MAE cm
+- [done]Line MAE px
+- [done]Line MAE cm
+- [done]Mean line absolute error cm over validation
+- [done]Median line absolute error MAE cm over validation
+- [done]Maximum line absolute error MAE cm over validation
+
+Actually, my DINOv3 model is not frozen.
+So I probably should fix that.
+Regardless, I will let these two jobs finish, then continue to improve the DINOv3-based model.

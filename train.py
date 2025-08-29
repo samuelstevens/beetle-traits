@@ -46,10 +46,10 @@ class Config:
     n_steps: int = 100_000
     """Total number of training steps."""
     log_to: pathlib.Path = pathlib.Path("./logs")
-    learning_rate: float = 1e-4
+    learning_rate: float = 3e-4
+
     wandb_project: str = "beetle-traits"
     wandb_entity: str = "samuelstevens"
-    pck_rs: list[int] = dataclasses.field(default_factory=lambda: [1, 2, 4, 8])
     slurm_acct: str = ""
     slurm_partition: str = ""
     n_hours: float = 2.0
@@ -66,7 +66,7 @@ def make_dataloader(cfg: btx.data.HawaiiConfig):
     ops = [
         btx.data.utils.DecodeRGB(),
         btx.data.utils.Resize(),
-        grain.transforms.Batch(batch_size=cfg.batch_size, drop_remainder=True),
+        grain.transforms.Batch(batch_size=cfg.batch_size, drop_remainder=False),
     ]
     loader = grain.DataLoader(
         data_source=source,
@@ -80,27 +80,23 @@ def make_dataloader(cfg: btx.data.HawaiiConfig):
     return loader
 
 
-def point_mae(preds_bl22, tgts_bl22):
-    # flatten endpoints
-    pred_bl2 = einops.rearrange(
-        preds_bl22, "batch lines points coords -> (batch lines) points coords"
-    )
-    tgts_bl2 = einops.rearrange(
-        tgts_bl22, "batch lines points coords -> (batch lines) points coords"
-    )
-    dists_bl = jnp.linalg.norm(pred_bl2 - tgts_bl2, axis=-1)
-    mae_b = dists_bl.mean(axis=1)  # [B]
-
-
 @jaxtyped(typechecker=beartype.beartype)
 class Aux(eqx.Module):
     loss: Float[Array, ""]
     preds: Float[Array, "batch 2 2 2"]
-    mse: Float[Array, ""]
-    point_mae_px: Float[Array, ""]
+    point_err_px: Float[Array, " batch points"]
+    point_err_cm: Float[Array, " batch points"]
+    line_err_px: Float[Array, " batch lines"]
+    line_err_cm: Float[Array, " batch lines"]
 
     def metrics(self):
-        return {"loss": self.loss, "mse": self.mse, "point_mae_px": self.point_mae_px}
+        return {
+            "loss": self.loss,
+            "point_err_px": self.point_err_px,
+            "point_err_cm": self.point_err_cm,
+            "line_err_px": self.line_err_px,
+            "line_err_cm": self.line_err_cm,
+        }
 
 
 @jaxtyped(typechecker=beartype.beartype)
@@ -112,20 +108,34 @@ def loss_and_aux(
     mse = jnp.mean((preds - batch["tgt"]) ** 2)
 
     # Metrics
+    # Pixels
     scale_x, scale_y = jnp.unstack(batch["scale"], axis=-1)
     scale_x = jnp.expand_dims(scale_x, (1, 2))
     scale_y = jnp.expand_dims(scale_y, (1, 2))
     preds_px = preds.at[:, :, :, 0].divide(scale_x).at[:, :, :, 1].divide(scale_y)
     tgts_px = batch["tgt"].at[:, :, :, 0].divide(scale_x).at[:, :, :, 1].divide(scale_y)
 
-    # Point MAE px
-    point_mae_px = jnp.linalg.norm(preds_px - tgts_px, axis=-1).mean()
+    # Centimeters
+    scalebar_start, scalebar_end = jnp.unstack(batch["scalebar_px"], axis=1)
+    px_per_cm = jnp.linalg.norm(scalebar_start - scalebar_end, axis=1)
 
-    # point_mae_cm
-    # line_len_mae_px
-    # line_len_mae_cm
+    # Point MAE
+    point_err_px = einops.rearrange(
+        jnp.linalg.norm(preds_px - tgts_px, axis=-1),
+        "batch lines points -> batch (lines points)",
+    )
+    point_err_cm = point_err_px / px_per_cm[:, None]
 
-    return mse, Aux(mse, preds, mse, point_mae_px)
+    # Line length MAE
+    tgts_start_px, tgts_end_px = jnp.unstack(tgts_px, axis=2)
+    tgts_line_px = jnp.linalg.norm(tgts_start_px - tgts_end_px, axis=-1)
+
+    preds_start_px, preds_end_px = jnp.unstack(preds_px, axis=2)
+    preds_line_px = jnp.linalg.norm(preds_start_px - preds_end_px, axis=-1)
+    line_err_px = jnp.abs(preds_line_px - tgts_line_px)
+    line_err_cm = line_err_px / px_per_cm[:, None]
+
+    return mse, Aux(mse, preds, point_err_px, point_err_cm, line_err_px, line_err_cm)
 
 
 @jaxtyped(typechecker=beartype.beartype)
@@ -211,11 +221,20 @@ def validate(cfg: Config, model: eqx.Module, val_dl):
         metrics.append(aux.metrics())
 
     metrics = {
-        f"val/{k}": jnp.array([dct[k] for dct in metrics]).mean().item()
-        for k in metrics[0]
+        k: jnp.concatenate([dct[k].reshape(-1) for dct in metrics]) for k in metrics[0]
     }
+
+    means = {f"val/{k}": v.mean().item() for k, v in metrics.items()}
+    maxes = {f"val/max_{k}": v.max().item() for k, v in metrics.items()}
+    medians = {f"val/median_{k}": jnp.median(v).item() for k, v in metrics.items()}
+
     beetle_id, img = plot_preds(batch, metadata, aux.preds)
-    return {**metrics, f"images/val/beetle{beetle_id}": wandb.Image(img)}
+    return {
+        **means,
+        **maxes,
+        **medians,
+        f"images/val/beetle{beetle_id}": wandb.Image(img),
+    }
 
 
 def is_device_array(x: object) -> bool:
@@ -252,14 +271,13 @@ def train(cfg: Config):
     model = btx.modeling.make(cfg.model, key)
 
     optim = optax.sgd(learning_rate=cfg.learning_rate)
-    state = optim.init(eqx.filter([model], eqx.is_inexact_array))
+    state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
     run = wandb.init(
         project=cfg.wandb_project,
         entity=cfg.wandb_entity,
         config=dataclasses.asdict(cfg),
         tags=cfg.tags,
-        mode="disabled",
     )
 
     # Training
@@ -270,7 +288,8 @@ def train(cfg: Config):
         if step % cfg.save_every == 0:
             beetle_id, img = plot_preds(batch, metadata, aux.preds)
             metrics = {
-                f"train/{key}": value.item() for key, value in aux.metrics().items()
+                f"train/{key}": value.mean().item()
+                for key, value in aux.metrics().items()
             }
             metrics["step"] = step
             metrics[f"images/train/beetle{beetle_id}"] = wandb.Image(img)

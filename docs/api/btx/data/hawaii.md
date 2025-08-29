@@ -60,8 +60,8 @@ Testing Strategy:
 Classes
 -------
 
-`Config(hf_root: pathlib.Path = PosixPath('data/hawaii'), annotations: pathlib.Path = PosixPath('data/hawaii-formatted/annotations.json'), include_polylines: bool = True, split: Literal['train', 'val'] = 'train', seed: int = 0, min_val_groups: int = 2, min_val_beetles: int = 20, n_workers: int = 4, batch_size: int = 16)`
-:   Config(hf_root: pathlib.Path = PosixPath('data/hawaii'), annotations: pathlib.Path = PosixPath('data/hawaii-formatted/annotations.json'), include_polylines: bool = True, split: Literal['train', 'val'] = 'train', seed: int = 0, min_val_groups: int = 2, min_val_beetles: int = 20, n_workers: int = 4, batch_size: int = 16)
+`Config(hf_root: pathlib.Path = PosixPath('data/hawaii'), annotations: pathlib.Path = PosixPath('data/hawaii-formatted/annotations.json'), include_polylines: bool = True, n_workers: int = 4, batch_size: int = 16, split: Literal['train', 'val'] = 'train', seed: int = 0, min_val_groups: int = 2, min_val_beetles: int = 20)`
+:   Config(hf_root: pathlib.Path = PosixPath('data/hawaii'), annotations: pathlib.Path = PosixPath('data/hawaii-formatted/annotations.json'), include_polylines: bool = True, n_workers: int = 4, batch_size: int = 16, split: Literal['train', 'val'] = 'train', seed: int = 0, min_val_groups: int = 2, min_val_beetles: int = 20)
 
     ### Instance variables
 
@@ -69,7 +69,7 @@ Classes
     :   Path to the annotations.json file made by running format_hawaii.py.
 
     `batch_size: int`
-    :
+    :   Batch size.
 
     `hf_root: pathlib.Path`
     :   Path to the dataset root downloaded from HuggingFace.
@@ -84,7 +84,7 @@ Classes
     :   Minimum group images per species in validation.
 
     `n_workers: int`
-    :
+    :   Number of dataloader workers.
 
     `seed: int`
     :   Random seed for split.
