@@ -29,9 +29,9 @@ class Model(eqx.Module):
         self.head = eqx.nn.Linear(self.vit.cfg.embed_dim, 8, key=key)
 
     def __call__(
-        self, x_whc: Float[Array, "w h c"], *, key: chex.PRNGKey | None = None
+        self, x_hwc: Float[Array, "h w c"], *, key: chex.PRNGKey | None = None
     ) -> Float[Array, "2 2 2"]:
-        x_cwh = einops.rearrange(x_whc, "w h c -> c h w")
+        x_cwh = einops.rearrange(x_hwc, "h w c -> c h w")
         x_d = self.vit(x_cwh)
         coords = self.head(x_d)
         return coords.reshape(2, 2, 2)

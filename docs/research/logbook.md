@@ -121,12 +121,78 @@ We also need to annotate some of the BioRepo data as a test set.
 
 - [done] Point MAE px
 - [done] Point MAE cm
-- [done]Line MAE px
-- [done]Line MAE cm
-- [done]Mean line absolute error cm over validation
-- [done]Median line absolute error MAE cm over validation
-- [done]Maximum line absolute error MAE cm over validation
+- [done] Line MAE px
+- [done] Line MAE cm
+- [done] Mean line absolute error cm over validation
+- [done] Median line absolute error MAE cm over validation
+- [done] Maximum line absolute error MAE cm over validation
 
 Actually, my DINOv3 model is not frozen.
 So I probably should fix that.
 Regardless, I will let these two jobs finish, then continue to improve the DINOv3-based model.
+
+# 08/31/2025
+
+Both my runs failed to improve at all.
+
+Claude suggests:
+
+- [done] utils.Resize swaps width and height.
+- No momentum on SGD. [fixed by using adamw]
+- [done] frozen.Model has a mistake in the einops.rearrange expression
+
+GPT-5 suggests:
+
+- [done] utils.Resize swaps width and height.
+- [done] toy.Model has a mistake in the einops.rearrange expression
+- [done] frozen.Model is not really frozen
+- [done] dinov3.PatchEmbed has a typo in the kwargs to einops.rearrange
+- dinov3.LayerScale.gamma should not be initialized to 0s for training from scratch.
+- train.py: Dataset builds points_px_l22 as [width, length], but in plot_preds you unpack gt_length_px, gt_width_px = batch["points_px"][0], i.e., reversed. This only affects visualization (not the loss/MSE)
+
+Now I have some other problems to work through.
+
+1. Datasets. I need integrate the BeetlePalooza data first.
+2. Objective. I need to add the gaussian heatmap regression.
+3. We also need a better decoder using the upsampling approach.
+4. Then better models (EoMT) if it's still not good enough.
+
+[Some suggestions for the keypoint problem](https://chatgpt.com/share/68b5d006-d3dc-8003-ae63-dc8690c0a97f)
+
+# 09/04/2025
+
+The TODOs have not changed from above.
+I could ask the team to work on data annotation of the BioRepo data.
+But I should try to figure out which samples are most meaningful.
+Maybe stratify by species and pick out 1 of each species?
+
+Meeting Notes:
+
+- Metrics: validation RMSE, MAE, bias (consistently under or over).
+- Stratify by genus instead of species.
+- Annotate two trays of non-hawaii-looking beetles for validation.
+
+# 09/23/2025
+
+- Validation is only on the Hawaii beetles
+- Need to use the BeetlePalooza data.
+
+The BeetlePalooza data is shit, unless you use the images resized from Isa. But if the images are resized, then I won't be able to do pixel-level matching. So I need to write a clear bug report.
+
+So here is my bug report:
+
+
+Goal: I want individual beetle pictures with pixel-level annotations.
+
+Attempts:
+
+1. Map the annotations from `BeetleMeasurements.csv` to the group images. These don't match. See attached `A00000032929.png`. This is from the main branch, commit [b1dd26a9fbb058ad6b8ce62731c9ccbeba320485](https://huggingface.co/datasets/imageomics/2018-NEON-beetles/tree/b1dd26a9fbb058ad6b8ce62731c9ccbeba320485).
+2. Use the group images in `/fs/ess/PAS2136/BeetlePalooza-2024/Resized Images [Corrected from ISA]` on OSC. These match the annotations. However, I need to know the individual beetle image positions in the group image so I can offset the annotations from the group image to the individual images. In the past, I've used [`skimage.feature.match_template()`](https://scikit-image.org/docs/0.25.x/api/skimage.feature.html#skimage.feature.match_template) to do this. But I don't get a good match between the individual images and the resized group images. In contrast, I get a perfect match between the individual images and the original group images.
+
+Things I have yet to try:
+
+1. Resize the individual images using the same resizing ratio from the original group image to the resized group image. Downside: this requires both the original group image that produced the indvidual image crops AND the resized group image that matches the annotations to calculate the resizing ratio.
+2. Use the resized images and simply add padding to the annotations to re-crop individual images from the group images. Downside: this is a heuristic and throws away all of the work done cropping the indvidiuals originally.
+3. Downloading pr/26 and praying that one of my original attempts works.
+
+Do you have any recommendations?

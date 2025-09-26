@@ -186,7 +186,7 @@ class PatchEmbed(eqx.Module):
 
     def __call__(
         self, x_chw: Float[Array, "channnels height width"]
-    ) -> Float[Array, "n dim"]:
+    ) -> Float[Array, "h w dim"]:
         _, H, W = x_chw.shape
         # patch_H, patch_W = self.patch_size
         # assert H % patch_H == 0, f"Input image height {H} is not a multiple of patch height {patch_H}"
@@ -195,7 +195,7 @@ class PatchEmbed(eqx.Module):
         x_dhw = self.proj(x_chw)
         _, h, w = x_dhw.shape
         x_nd = einops.rearrange(x_dhw, "d h w -> (h w) d")
-        x = einops.rearrange(x_nd, "(h w) d -> h w d", h=h, w=h)
+        x = einops.rearrange(x_nd, "(h w) d -> h w d", h=h, w=w)
         return x
 
 

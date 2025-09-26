@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.14.17"
+__generated_with = "0.15.2"
 app = marimo.App(width="full")
 
 
@@ -37,6 +37,7 @@ def _():
 def _(pathlib):
     hf_root = "/fs/scratch/PAS2136/samuelstevens/datasets/hawaii-beetles"
     hf_root = pathlib.Path(hf_root)
+    assert hf_root.exists()
     return (hf_root,)
 
 
@@ -54,7 +55,7 @@ def _(hf_root, pl):
         pl.col("coords_elytra_max_width").str.json_decode(),
     )
     trait_df.group_by("GroupImgBasename", "BeetlePosition").len().filter(
-        pl.col("count") > 1
+        pl.col("len") > 1
     ).is_empty()
     return (trait_df,)
 

@@ -39,7 +39,7 @@ class Resize(grain.transforms.Map):
 
     def map(self, sample: dict[str, object]) -> dict[str, object]:
         img = sample["img"]
-        orig_h, orig_w = img.size
+        orig_w, orig_h = img.size
 
         img = np.array(img.resize((self.size, self.size)))
         sample["img"] = img.astype(np.float32) / 255.0

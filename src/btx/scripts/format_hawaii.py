@@ -60,6 +60,7 @@ import logging
 import pathlib
 import resource
 import time
+import typing as tp
 
 import beartype
 import numpy as np
@@ -108,6 +109,38 @@ class Config:
 
     groups_per_job: int = 4
     """Number of group images to process per job."""
+
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
+class ValidationError:
+    """Data validation error with type and count."""
+
+    error_type: tp.Literal[
+        "trait_duplicates",
+        "image_duplicates",
+        "images_without_traits",
+        "traits_without_images",
+        "missing_files",
+        "corrupted_files",
+        "dimension_errors",
+    ]
+    count: int
+    details: list[str] = dataclasses.field(default_factory=list)
+    """Optional list of example error details for logging."""
+
+    def log_summary(self, logger: logging.Logger) -> None:
+        """Log a summary of this error."""
+        logger.error("Found %d %s", self.count, self.error_type.replace("_", " "))
+        for detail in self.details[:10]:  # Show first 10 examples
+            logger.error("  %s", detail)
+        if len(self.details) > 10:
+            logger.error("  ... and %d more", len(self.details) - 10)
+
+    @property
+    def display_name(self) -> str:
+        """Human-readable error type name."""
+        return self.error_type.replace("_", " ").title()
 
 
 @beartype.beartype

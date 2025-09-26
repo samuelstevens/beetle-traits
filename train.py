@@ -270,7 +270,7 @@ def train(cfg: Config):
 
     model = btx.modeling.make(cfg.model, key)
 
-    optim = optax.sgd(learning_rate=cfg.learning_rate)
+    optim = optax.adamw(learning_rate=cfg.learning_rate)
     state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
     run = wandb.init(
