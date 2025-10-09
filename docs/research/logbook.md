@@ -196,3 +196,16 @@ Things I have yet to try:
 3. Downloading pr/26 and praying that one of my original attempts works.
 
 Do you have any recommendations?
+
+
+# 10/09/2025
+
+Supposedly pr/31 fixes the issue above.
+Now I need to onboard Hanane.
+
+While I work on data, she can work on:
+
+1. (me) data
+2. Objective. I need to add the gaussian heatmap regression.
+3. We also need a better decoder using the upsampling approach.
+4. Then better models (EoMT) if it's still not good enough.

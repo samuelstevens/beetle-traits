@@ -99,8 +99,8 @@ class Aux(eqx.Module):
         }
 
 
-@jaxtyped(typechecker=beartype.beartype)
 @eqx.filter_jit()
+@jaxtyped(typechecker=beartype.beartype)
 def loss_and_aux(
     model: eqx.Module, batch: dict[str, Array]
 ) -> tuple[Float[Array, ""], Aux]:
@@ -138,8 +138,8 @@ def loss_and_aux(
     return mse, Aux(mse, preds, point_err_px, point_err_cm, line_err_px, line_err_cm)
 
 
-@jaxtyped(typechecker=beartype.beartype)
 @eqx.filter_jit()
+@jaxtyped(typechecker=beartype.beartype)
 def step_model(
     model: eqx.Module,
     optim: optax.GradientTransformation,
