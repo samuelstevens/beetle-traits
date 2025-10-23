@@ -539,7 +539,7 @@ class VisionTransformer(eqx.Module):
         self.blocks = [SelfAttentionBlock(cfg, k) for k in keys]
         self.norm = _norm_layer_lookup[cfg.norm_layer](cfg.embed_dim)
 
-    # NEW: expose both CLS and patch tokens
+    # Update: expose both CLS and patch tokens
     def tokens(self, x: Float[Array, "..."]):
         """
         Returns:
@@ -552,23 +552,20 @@ class VisionTransformer(eqx.Module):
         h, w, _ = x_hwd.shape
         x_nd = einops.rearrange(x_hwd, "h w d -> (h w) d")  # (N_patches, D)
 
-        # Prep sequence: [CLS] + [storage tokens] + [patch tokens]
         cls_1d = self.cls_token[None, :] + 0 * self.mask_token
         x_nd = jnp.concatenate([cls_1d, self.storage_tokens, x_nd], axis=0)  # (1+S+N, D)
 
-        # RoPE + blocks
         rope_2nd = jnp.stack(self.rope_embed(h=h, w=w), axis=0)
         for block in self.blocks:
             x_nd = block(x_nd, rope_2nd)
 
-        # IMPORTANT: normalize the WHOLE sequence so we can return normalized patches
         x_norm_nd = jax.vmap(self.norm)(x_nd)  # (1+S+N, D)
 
         cls_token = x_norm_nd[0]
         patch_tokens = x_norm_nd[self.cfg.n_storage_tokens + 1 :]  # (N_patches, D) == (h*w, D)
         return cls_token, patch_tokens, (h, w)
 
-    # Keep old API: return only CLS token (for the "frozen" model path)
+    #  return only CLS token (for the frozen model path)
     def __call__(self, x: Float[Array, "..."]):
         cls_token, _patch_tokens, _grid = self.tokens(x)
         return cls_token
