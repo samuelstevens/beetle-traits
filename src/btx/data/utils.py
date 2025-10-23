@@ -56,3 +56,49 @@ class Resize(grain.transforms.Map):
         sample["scale"] = np.array([scale_x, scale_y])
 
         return sample
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
+class GaussianHeatmap(grain.transforms.Map):
+    size: int = 256
+    """Image size in pixels (used if we can't infer from sample['img'])."""
+    sigma: float = 3.0
+    """Standard deviation of the Gaussian in pixels."""
+
+    def map(self, sample: dict[str, object]) -> dict[str, object]:
+        """
+        Reads 'tgt' (keypoint coordinates) and adds:
+          sample['tgt_pixel_probs']: Float[np.ndarray, "points height width"]
+
+        Each channel is a 2D Gaussian centered at the corresponding keypoint,
+        with peak value 1.0 and std-dev = self.sigma (in pixels).
+        """
+        if "img" in sample and isinstance(sample["img"], np.ndarray):
+            H, W = sample["img"].shape[:2]
+        else:
+            H = W = int(self.size)
+        tgt = np.asarray(sample["tgt"], dtype=np.float32)  # shape: (lines, 2, 2)
+        pts = tgt.reshape(-1, 2)                           # shape: (num_points, 2)
+        yy, xx = np.meshgrid(
+            np.arange(H, dtype=np.float32),
+            np.arange(W, dtype=np.float32),
+            indexing="ij",
+        )  # shapes: (H, W)
+
+        xx = xx[None, ...]  # (1, H, W)
+        yy = yy[None, ...]  # (1, H, W)
+
+        x0 = pts[:, 0][:, None, None]
+        y0 = pts[:, 1][:, None, None]
+
+        sigma2 = float(self.sigma) ** 2
+        probs = np.exp(-(((xx - x0) ** 2 + (yy - y0) ** 2) / (2.0 * sigma2)))  # (points, H, W)
+
+        invalid = ~np.isfinite(pts).all(axis=1)
+        if invalid.any():
+            probs[invalid] = 0.0
+
+        sample["tgt_pixel_probs"] = probs.astype(np.float32)
+        sample["tgt_pixel_sigma"] = np.array(self.sigma, dtype=np.float32)
+
+        return sample

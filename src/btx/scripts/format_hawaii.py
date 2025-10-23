@@ -628,16 +628,17 @@ def worker_fn(
 
 @beartype.beartype
 def load_trait_df(cfg: Config) -> pl.DataFrame:
+    coords_dtype = pl.List(pl.List(pl.Float64))
     return pl.read_csv(cfg.hf_root / "trait_annotations.csv").with_columns(
         pl.col("groupImageFilePath")
         .str.to_lowercase()
         .str.strip_prefix("group_images/")
         .str.strip_suffix(".png")
         .alias("GroupImgBasename"),
-        pl.col("coords_scalebar").str.json_decode(),
-        pl.col("coords_elytra_max_length").str.json_decode(),
-        pl.col("coords_basal_pronotum_width").str.json_decode(),
-        pl.col("coords_elytra_max_width").str.json_decode(),
+        pl.col("coords_scalebar").str.json_decode(coords_dtype), # pass coords_dtype to avoid polars error
+        pl.col("coords_elytra_max_length").str.json_decode(coords_dtype),
+        pl.col("coords_basal_pronotum_width").str.json_decode(coords_dtype),
+        pl.col("coords_elytra_max_width").str.json_decode(coords_dtype),
     )
 
 
