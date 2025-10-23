@@ -439,6 +439,70 @@ class SelfAttentionBlock(eqx.Module):
         return x_ffn_nd
 
 
+# @beartype.beartype
+# class VisionTransformer(eqx.Module):
+#     cfg: Config
+#     cls_token: Float[Array, " dim"]
+#     storage_tokens: Float[Array, "n_storage dim"]
+#     mask_token: Float[Array, " dim"]
+#     patch_embed: PatchEmbed
+#     rope_embed: RopePositionEmbedding
+#     blocks: list[SelfAttentionBlock]
+#     norm: eqx.Module
+
+#     def __init__(self, cfg: Config, key: chex.PRNGKey):
+#         self.cfg = cfg
+
+#         assert not self.cfg.untie_cls_and_patch_norms, "Not supported"
+
+#         k1, *keys = jax.random.split(key, (2 + cfg.depth))
+
+#         self.cls_token = jnp.zeros((cfg.embed_dim,))
+#         self.storage_tokens = jnp.zeros((cfg.n_storage_tokens, cfg.embed_dim))
+#         self.mask_token = jnp.zeros((cfg.embed_dim,))
+
+#         self.patch_embed = PatchEmbed(
+#             cfg.img_size,
+#             cfg.patch_size,
+#             cfg.in_chans,
+#             cfg.embed_dim,
+#             k1,
+#         )
+#         self.rope_embed = RopePositionEmbedding(
+#             cfg.embed_dim,
+#             num_heads=cfg.num_heads,
+#             base=cfg.pos_embed_rope_base,
+#             min_period=cfg.pos_embed_rope_min_period,
+#             max_period=cfg.pos_embed_rope_max_period,
+#             normalize_coords=cfg.pos_embed_rope_normalize_coords,
+#             dtype=_dtype_lookup[cfg.pos_embed_rope_dtype],
+#         )
+#         self.blocks = [SelfAttentionBlock(cfg, k) for k in keys]
+#         self.norm = _norm_layer_lookup[cfg.norm_layer](cfg.embed_dim)
+
+#     def __call__(self, x: Float[Array, "..."]):
+#         x_hwd = self.patch_embed(x)
+#         h, w, _ = x_hwd.shape
+#         x_nd = einops.rearrange(x_hwd, "height width dim -> (height width) dim")
+#         cls_1d = self.cls_token[None, :] + 0 * self.mask_token
+#         storage_tokens_md = self.storage_tokens
+
+#         x_nd = jnp.concatenate([cls_1d, storage_tokens_md, x_nd], axis=0)
+
+#         rope_sincos = self.rope_embed(h=h, w=w)
+#         rope_2nd = jnp.stack(rope_sincos, axis=0)
+#         for block in self.blocks:
+#             x_nd = block(x_nd, rope_2nd)
+
+#         if self.cfg.untie_global_and_local_cls_norm:
+#             x_cls_reg_nd = x_nd[: self.cfg.n_storage_tokens + 1]
+#             x_norm_cls_reg = jax.vmap(self.norm)(x_cls_reg_nd)
+#         else:
+#             x_norm_nd = jax.vmap(self.norm)(x_nd)
+#             x_norm_cls_reg = x_norm_nd[: self.cfg.n_storage_tokens + 1]
+
+#         return x_norm_cls_reg[0]
+
 @beartype.beartype
 class VisionTransformer(eqx.Module):
     cfg: Config
@@ -452,7 +516,6 @@ class VisionTransformer(eqx.Module):
 
     def __init__(self, cfg: Config, key: chex.PRNGKey):
         self.cfg = cfg
-
         assert not self.cfg.untie_cls_and_patch_norms, "Not supported"
 
         k1, *keys = jax.random.split(key, (2 + cfg.depth))
@@ -462,11 +525,7 @@ class VisionTransformer(eqx.Module):
         self.mask_token = jnp.zeros((cfg.embed_dim,))
 
         self.patch_embed = PatchEmbed(
-            cfg.img_size,
-            cfg.patch_size,
-            cfg.in_chans,
-            cfg.embed_dim,
-            k1,
+            cfg.img_size, cfg.patch_size, cfg.in_chans, cfg.embed_dim, k1
         )
         self.rope_embed = RopePositionEmbedding(
             cfg.embed_dim,
@@ -480,28 +539,39 @@ class VisionTransformer(eqx.Module):
         self.blocks = [SelfAttentionBlock(cfg, k) for k in keys]
         self.norm = _norm_layer_lookup[cfg.norm_layer](cfg.embed_dim)
 
-    def __call__(self, x: Float[Array, "..."]):
-        x_hwd = self.patch_embed(x)
+    # NEW: expose both CLS and patch tokens
+    def tokens(self, x: Float[Array, "..."]):
+        """
+        Returns:
+          cls_token: Float[Array, "dim"]
+          patch_tokens: Float[Array, " (Hp*Wp) dim"]
+          grid_hw: (Hp, Wp) spatial grid size of patches
+        """
+        # Patchify
+        x_hwd = self.patch_embed(x)                 # (Hp, Wp, D) or (H, W, D) as implemented
         h, w, _ = x_hwd.shape
-        x_nd = einops.rearrange(x_hwd, "height width dim -> (height width) dim")
+        x_nd = einops.rearrange(x_hwd, "h w d -> (h w) d")  # (N_patches, D)
+
+        # Prep sequence: [CLS] + [storage tokens] + [patch tokens]
         cls_1d = self.cls_token[None, :] + 0 * self.mask_token
-        storage_tokens_md = self.storage_tokens
+        x_nd = jnp.concatenate([cls_1d, self.storage_tokens, x_nd], axis=0)  # (1+S+N, D)
 
-        x_nd = jnp.concatenate([cls_1d, storage_tokens_md, x_nd], axis=0)
-
-        rope_sincos = self.rope_embed(h=h, w=w)
-        rope_2nd = jnp.stack(rope_sincos, axis=0)
+        # RoPE + blocks
+        rope_2nd = jnp.stack(self.rope_embed(h=h, w=w), axis=0)
         for block in self.blocks:
             x_nd = block(x_nd, rope_2nd)
 
-        if self.cfg.untie_global_and_local_cls_norm:
-            x_cls_reg_nd = x_nd[: self.cfg.n_storage_tokens + 1]
-            x_norm_cls_reg = jax.vmap(self.norm)(x_cls_reg_nd)
-        else:
-            x_norm_nd = jax.vmap(self.norm)(x_nd)
-            x_norm_cls_reg = x_norm_nd[: self.cfg.n_storage_tokens + 1]
+        # IMPORTANT: normalize the WHOLE sequence so we can return normalized patches
+        x_norm_nd = jax.vmap(self.norm)(x_nd)  # (1+S+N, D)
 
-        return x_norm_cls_reg[0]
+        cls_token = x_norm_nd[0]
+        patch_tokens = x_norm_nd[self.cfg.n_storage_tokens + 1 :]  # (N_patches, D) == (h*w, D)
+        return cls_token, patch_tokens, (h, w)
+
+    # Keep old API: return only CLS token (for the "frozen" model path)
+    def __call__(self, x: Float[Array, "..."]):
+        cls_token, _patch_tokens, _grid = self.tokens(x)
+        return cls_token
 
 
 @beartype.beartype

@@ -1,12 +1,17 @@
 import beartype
 import submitit
 import tyro
-
+import os
 import train
 
 
 @beartype.beartype
 def main(cfg: train.Config):
+    # specifying wandb acct to log to
+    os.environ["WANDB_API_KEY"] = os.environ.get("WANDB_API_KEY")
+    os.environ["WANDB_MODE"] = "online"
+    os.environ["WANDB_ENTITY"] = os.environ.get("WANDB_ENTITY")
+    os.environ["WANDB_PROJECT"] = "beetle-traits"
     if cfg.slurm_acct:
         executor = submitit.SlurmExecutor(folder=cfg.log_to)
         executor.update_parameters(

@@ -14,7 +14,7 @@ import numpy as np
 import optax
 from jaxtyping import Array, Float, jaxtyped
 from PIL import Image, ImageDraw
-
+import os
 import btx.data
 import btx.modeling
 import wandb
@@ -47,33 +47,80 @@ class Config:
     """Total number of training steps."""
     log_to: pathlib.Path = pathlib.Path("./logs")
     learning_rate: float = 3e-4
-
+    # flexible wandb logging
     wandb_project: str = "beetle-traits"
-    wandb_entity: str = "samuelstevens"
+    wandb_entity: str = os.environ.get("WANDB_ENTITY")
     slurm_acct: str = ""
     slurm_partition: str = ""
     n_hours: float = 2.0
 
 
+# @beartype.beartype
+# def make_dataloader(cfg: btx.data.HawaiiConfig):
+#     source = btx.data.HawaiiDataset(cfg)
+#     shuffle = cfg.split == "train"
+#     n_epochs = None if cfg.split == "train" else 1
+#     sampler = grain.samplers.IndexSampler(
+#         num_records=len(source), shuffle=shuffle, num_epochs=n_epochs, seed=cfg.seed
+#     )
+#     ops = [
+#         btx.data.utils.DecodeRGB(),
+#         btx.data.utils.Resize(size=cfg.size),
+#         btx.data.utils.GaussianHeatmap(
+#             size=cfg.size,
+#             sigma=getattr(cfg, "sigma", 3.0),  # fallback if not present on data cfg
+#         ),
+#         grain.transforms.Batch(batch_size=cfg.batch_size, drop_remainder=False),
+#     ]
+#     loader = grain.DataLoader(
+#         data_source=source,
+#         sampler=sampler,
+#         operations=ops,
+#         worker_count=cfg.n_workers,
+#         worker_buffer_size=2,  # per-worker prefetch of output batches
+#         read_options=grain.ReadOptions(num_threads=2, prefetch_buffer_size=64),
+#     )
+
+#     return loader
+
 @beartype.beartype
-def make_dataloader(cfg: btx.data.HawaiiConfig):
-    source = btx.data.HawaiiDataset(cfg)
-    shuffle = cfg.split == "train"
-    n_epochs = None if cfg.split == "train" else 1
+def make_dataloader(cfg: btx.data.HawaiiConfig | object):
+    """
+    accepts either:
+      - data config (btx.data.HawaiiConfig)
+      - or top-level train.Config (with a .data field)
+
+    normalize to `data_cfg` and read everything from there.
+    """
+    data_cfg = cfg.data if hasattr(cfg, "data") else cfg
+    split       = getattr(data_cfg, "split", "train")
+    seed        = getattr(data_cfg, "seed", 17)
+    batch_size  = getattr(data_cfg, "batch_size", 8)
+    n_workers   = getattr(data_cfg, "n_workers", 4)
+    img_size    = getattr(data_cfg, "size", 256)
+    sigma       = getattr(data_cfg, "sigma", 3.0)
+
+    source = btx.data.HawaiiDataset(data_cfg)
+    shuffle = split == "train"
+    n_epochs = None if split == "train" else 1
+
     sampler = grain.samplers.IndexSampler(
-        num_records=len(source), shuffle=shuffle, num_epochs=n_epochs, seed=cfg.seed
+        num_records=len(source), shuffle=shuffle, num_epochs=n_epochs, seed=seed
     )
+
     ops = [
         btx.data.utils.DecodeRGB(),
-        btx.data.utils.Resize(),
-        grain.transforms.Batch(batch_size=cfg.batch_size, drop_remainder=False),
+        btx.data.utils.Resize(size=img_size),
+        btx.data.utils.GaussianHeatmap(size=img_size, sigma=sigma),
+        grain.transforms.Batch(batch_size=batch_size, drop_remainder=False),
     ]
+
     loader = grain.DataLoader(
         data_source=source,
         sampler=sampler,
         operations=ops,
-        worker_count=cfg.n_workers,
-        worker_buffer_size=2,  # per-worker prefetch of output batches
+        worker_count=n_workers,
+        worker_buffer_size=2, 
         read_options=grain.ReadOptions(num_threads=2, prefetch_buffer_size=64),
     )
 
@@ -104,38 +151,65 @@ class Aux(eqx.Module):
 def loss_and_aux(
     model: eqx.Module, batch: dict[str, Array]
 ) -> tuple[Float[Array, ""], Aux]:
+    """
+    handles both coordinate and heatmap output modes.
+    """
     preds = jax.vmap(model)(batch["img"])
-    mse = jnp.mean((preds - batch["tgt"]) ** 2)
 
-    # Metrics
-    # Pixels
-    scale_x, scale_y = jnp.unstack(batch["scale"], axis=-1)
-    scale_x = jnp.expand_dims(scale_x, (1, 2))
-    scale_y = jnp.expand_dims(scale_y, (1, 2))
-    preds_px = preds.at[:, :, :, 0].divide(scale_x).at[:, :, :, 1].divide(scale_y)
-    tgts_px = batch["tgt"].at[:, :, :, 0].divide(scale_x).at[:, :, :, 1].divide(scale_y)
+    # Coordinate mode
+    if preds.ndim == 4 and preds.shape[1:] == (2, 2, 2):
+        # Coordinate loss
+        mse = jnp.mean((preds - batch["tgt"]) ** 2)
+        preds_coords = preds  # (B, 2, 2, 2)
+
+    # Heatmap mode
+    elif preds.ndim == 4 and preds.shape[2] == batch["tgt_pixel_probs"].shape[2]:
+        assert preds.shape == batch["tgt_pixel_probs"].shape, (
+            f"Pred heatmaps {preds.shape} != tgt heatmaps {batch['tgt_pixel_probs'].shape}"
+        )
+        mse = jnp.mean((preds - batch["tgt_pixel_probs"]) ** 2)
+        B, K, H, W = preds.shape
+        idx_flat = jnp.argmax(preds.reshape(B, K, H * W), axis=-1)  
+        ys = (idx_flat // W).astype(jnp.float32)
+        xs = (idx_flat %  W).astype(jnp.float32)
+        preds_k2 = jnp.stack([xs, ys], axis=-1)  
+        preds_coords = preds_k2.reshape(B, 2, 2, 2)  
+    else:
+        raise RuntimeError(
+            f"Unrecognized model output shape {preds.shape}. "
+            "Expected (B, 2, 2, 2) for coordinates or (B, K, H, W) for heatmaps."
+        )
+
+    scale_x, scale_y = jnp.unstack(batch["scale"], axis=-1)  # (B,)
+    scale_x = jnp.expand_dims(scale_x, (1, 2))               # (B,1,1)
+    scale_y = jnp.expand_dims(scale_y, (1, 2))               # (B,1,1)
+
+    # Pred & tgt in original px
+    preds_px = preds_coords.at[:, :, :, 0].divide(scale_x).at[:, :, :, 1].divide(scale_y)
+    tgts_px  = batch["tgt"].at[:, :, :, 0].divide(scale_x).at[:, :, :, 1].divide(scale_y)
 
     # Centimeters
     scalebar_start, scalebar_end = jnp.unstack(batch["scalebar_px"], axis=1)
-    px_per_cm = jnp.linalg.norm(scalebar_start - scalebar_end, axis=1)
+    px_per_cm = jnp.linalg.norm(scalebar_start - scalebar_end, axis=1)  # (B,)
 
     # Point MAE
     point_err_px = einops.rearrange(
-        jnp.linalg.norm(preds_px - tgts_px, axis=-1),
-        "batch lines points -> batch (lines points)",
+        jnp.linalg.norm(preds_px - tgts_px, axis=-1),  # (B, 2, 2)
+        "batch lines points -> batch (lines points)",  # (B, 4)
     )
     point_err_cm = point_err_px / px_per_cm[:, None]
 
-    # Line length MAE
-    tgts_start_px, tgts_end_px = jnp.unstack(tgts_px, axis=2)
-    tgts_line_px = jnp.linalg.norm(tgts_start_px - tgts_end_px, axis=-1)
+    # Line length MAE (per line)
+    tgts_start_px, tgts_end_px = jnp.unstack(tgts_px, axis=2)   # (B,2,2) each
+    tgts_line_px = jnp.linalg.norm(tgts_start_px - tgts_end_px, axis=-1)  # (B,2)
 
     preds_start_px, preds_end_px = jnp.unstack(preds_px, axis=2)
-    preds_line_px = jnp.linalg.norm(preds_start_px - preds_end_px, axis=-1)
-    line_err_px = jnp.abs(preds_line_px - tgts_line_px)
+    preds_line_px = jnp.linalg.norm(preds_start_px - preds_end_px, axis=-1)  # (B,2)
+
+    line_err_px = jnp.abs(preds_line_px - tgts_line_px)          # (B,2)
     line_err_cm = line_err_px / px_per_cm[:, None]
 
-    return mse, Aux(mse, preds, point_err_px, point_err_cm, line_err_px, line_err_cm)
+    return mse, Aux(mse, preds_coords, point_err_px, point_err_cm, line_err_px, line_err_cm)
 
 
 @eqx.filter_jit()
