@@ -54,7 +54,9 @@ import gc
 import json
 import logging
 import pathlib
-import resource
+#import resource
+import subprocess
+import sys
 import time
 import typing as tp
 
@@ -75,10 +77,10 @@ log_format = "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
 class Config:
-    hf_root: pathlib.Path = pathlib.Path("./data/beetlepalooza")
+    hf_root: pathlib.Path = pathlib.Path("./data/beetlepalooza/individual_specimens")
     """Where you dumped data when using download_beetlepalooza.py."""
 
-    resized_root: pathlib.Path = pathlib.Path("./data/beetlepalooza-resized-images")
+    resized_root: pathlib.Path = pathlib.Path("./data/beetlepalooza/group_images_resized")
     """I don't know why the huggingface dataset doesn't have the right images. I don't make the rules. I just have to play by them."""
 
     log_to: pathlib.Path = pathlib.Path("./logs")
@@ -95,6 +97,13 @@ class Config:
 
     sample_rate: int = 20
     """Save 1 in sample_rate annotations as example images (default: 1 in 20)."""
+
+    # Preprocessing and postprocessing
+    run_position_correction: bool = True
+    """Run row_template_match_rename.py before template matching to correct beetle positions."""
+
+    run_validation_cleanup: bool = True
+    """Run validate_beetlepalooza_annotations.py after creating annotations to remove invalid measurements."""
 
     # Slurm configuration
     slurm_acct: str = ""
@@ -354,6 +363,7 @@ def save_example_images(
 def get_memory_info() -> dict[str, float]:
     """Get current memory usage information."""
     try:
+        # Try Linux /proc/meminfo first
         with open("/proc/meminfo", "r") as f:
             lines = f.readlines()
         meminfo = {}
@@ -369,21 +379,29 @@ def get_memory_info() -> dict[str, float]:
         mem_free_gb = meminfo.get("MemFree", 0) / (1024 * 1024)
 
         # Also get process-specific memory
-        usage = resource.getrusage(resource.RUSAGE_SELF)
-        process_mem_gb = usage.ru_maxrss / (1024 * 1024)  # Linux reports in KB
+        #usage = resource.getrusage(resource.RUSAGE_SELF)
+        #process_mem_gb = usage.ru_maxrss / (1024 * 1024)  # Linux reports in KB
 
         return {
             "total_gb": round(mem_total_gb, 2),
             "available_gb": round(mem_available_gb, 2),
             "free_gb": round(mem_free_gb, 2),
             "used_gb": round(mem_total_gb - mem_available_gb, 2),
-            "process_gb": round(process_mem_gb, 2),
+            #"process_gb": round(process_mem_gb, 2),
             "percent_used": round(
                 (mem_total_gb - mem_available_gb) / mem_total_gb * 100, 1
-            ),
+            ) if mem_total_gb > 0 else 0.0,
         }
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception:
+        # Return placeholder values on Windows or if /proc/meminfo is unavailable
+        # Memory monitoring is just for logging, not critical functionality
+        return {
+            "total_gb": 0.0,
+            "available_gb": 0.0,
+            "free_gb": 0.0,
+            "used_gb": 0.0,
+            "percent_used": 0.0,
+        }
 
 
 @beartype.beartype
@@ -482,7 +500,11 @@ def worker_fn(
         for row in group_rows.iter_rows(named=True):
             beetle_position = row["BeetlePosition"]
             indiv_img_rel_path = row["individualImageFilePath"]
-            indiv_img_abs_path = cfg.hf_root / indiv_img_rel_path
+            # Strip "individual_specimens/" prefix if present since hf_root already points there
+            clean_rel_path = indiv_img_rel_path
+            if indiv_img_rel_path.startswith("individual_specimens/"):
+                clean_rel_path = indiv_img_rel_path[len("individual_specimens/"):]
+            indiv_img_abs_path = cfg.hf_root / clean_rel_path
 
             # Load the individual image (grayscale for matching)
             try:
@@ -614,7 +636,13 @@ def worker_fn(
 @beartype.beartype
 def load_measurements_df(cfg: Config) -> pl.DataFrame:
     """Load and process the BeetleMeasurements.csv file."""
-    df = pl.read_csv(cfg.hf_root / "BeetleMeasurements.csv")
+    # BeetleMeasurements.csv is typically at the parent level of hf_root
+    measurements_path = cfg.hf_root.parent / "BeetleMeasurements.csv"
+    if not measurements_path.exists():
+        # Fallback to checking in hf_root itself
+        measurements_path = cfg.hf_root / "BeetleMeasurements.csv"
+
+    df = pl.read_csv(measurements_path)
 
     # Parse the coords_pix JSON string
     def parse_coords(coords_str):
@@ -639,12 +667,31 @@ def load_measurements_df(cfg: Config) -> pl.DataFrame:
 
 @beartype.beartype
 def load_specimens_df(cfg: Config) -> pl.DataFrame:
-    """Load and process the individual_specimens.csv file."""
-    df = pl.read_csv(cfg.hf_root / "individual_specimens.csv")
+    """Load specimens mapping; supports old (individual_specimens.csv) and new split metadata."""
+    # Try different possible locations for the metadata file
+    possible_paths = [
+        cfg.hf_root / "metadata.csv",  # Direct metadata in hf_root
+        cfg.hf_root / "Separate_segmented_train_test_splits_80_20" / "metadata.csv",  # Split metadata
+        cfg.hf_root.parent / "individual_specimens.csv",  # Old format at parent level
+    ]
 
-    # Extract beetle position from the individual image filename
-    # e.g., "A00000001831_specimen_1.png" -> 1
-    df = df.with_columns(
+    metadata_path = None
+    for path in possible_paths:
+        if path.exists():
+            metadata_path = path
+            break
+
+    if metadata_path is None:
+        # Help the user see what CSVs are present
+        available = "\n".join(str(p) for p in sorted(cfg.hf_root.glob("**/*.csv")))
+        tried_paths = "\n".join(f"- {p}" for p in possible_paths)
+        raise FileNotFoundError(
+            f"No specimens metadata found.\nTried:\n{tried_paths}\nAvailable CSVs:\n{available}"
+        )
+
+    df = pl.read_csv(metadata_path)
+
+    return df.with_columns(
         pl.col("groupImageFilePath")
         .str.strip_prefix("group_images/")
         .alias("GroupImgBasename"),
@@ -653,8 +700,6 @@ def load_specimens_df(cfg: Config) -> pl.DataFrame:
         .cast(pl.Int64)
         .alias("BeetlePosition"),
     )
-
-    return df
 
 
 @beartype.beartype
@@ -709,8 +754,12 @@ def validate_data(
             basename = rel_path.split("/")[-1]
             full_path = cfg.resized_root / basename
         else:
-            # For individual images, use hf_root with the full relative path
-            full_path = cfg.hf_root / rel_path
+            # For individual images, strip "individual_specimens/" prefix if present
+            # since hf_root already points to that directory
+            clean_path = rel_path
+            if rel_path.startswith("individual_specimens/"):
+                clean_path = rel_path[len("individual_specimens/"):]
+            full_path = cfg.hf_root / clean_path
 
         if not full_path.exists():
             missing_files.append(str(rel_path))
@@ -767,7 +816,11 @@ def validate_data(
                 group_width, group_height = group_img.size
 
                 for individual_rel_path in group_data["individualImageFilePath"]:
-                    individual_path = cfg.hf_root / individual_rel_path
+                    # Strip "individual_specimens/" prefix if present
+                    clean_individual_path = individual_rel_path
+                    if individual_rel_path.startswith("individual_specimens/"):
+                        clean_individual_path = individual_rel_path[len("individual_specimens/"):]
+                    individual_path = cfg.hf_root / clean_individual_path
 
                     # Skip if file doesn't exist (already reported)
                     if not individual_path.exists():
@@ -947,44 +1000,59 @@ def save_annotations(
     # Convert annotations to JSON format with measurements
     json_data = []
 
-    for annotation in annotations:
+    # Pre-index measurements by (GroupImgBasename, BeetlePosition) for O(1) lookup
+    # This avoids filtering the entire dataframe 11k+ times
+    logger.info("Building measurement index...")
+    measurements_by_key = {}
+    for row in measurements_df.iter_rows(named=True):
+        key = (row["GroupImgBasename"], row["BeetlePosition"])
+        if key not in measurements_by_key:
+            measurements_by_key[key] = []
+        measurements_by_key[key].append(row)
+    logger.info("Indexed %d unique beetles with measurements", len(measurements_by_key))
+
+    logger.info("Building JSON data for %d annotations...", len(annotations))
+    for idx, annotation in enumerate(annotations):
+        # Log progress every 1000 annotations
+        if (idx + 1) % 1000 == 0:
+            logger.info("Processed %d/%d annotations...", idx + 1, len(annotations))
+
         # Get base annotation data
         ann_dict = annotation.to_dict()
 
-        # Get measurements for this beetle
-        measurement_rows = measurements_df.filter(
-            (pl.col("GroupImgBasename") == annotation.group_img_basename)
-            & (pl.col("BeetlePosition") == annotation.beetle_position)
-        )
+        # Get measurements for this beetle using pre-built index
+        key = (annotation.group_img_basename, annotation.beetle_position)
+        measurement_rows = measurements_by_key.get(key, [])
 
         # Add measurements if available
         measurements = []
-        if not measurement_rows.is_empty():
-            for row in measurement_rows.iter_rows(named=True):
-                structure = row.get("structure", "")
-                coords = row.get("coords_pix", {})
-                dist_cm = row.get("dist_cm", None)
+        for row in measurement_rows:
+            structure = row.get("structure", "")
+            coords = row.get("coords_pix", {})
+            dist_cm = row.get("dist_cm", None)
 
-                if structure and coords and "x1" in coords:
-                    # Adjust coordinates relative to individual image
-                    origin_x, origin_y = annotation.indiv_offset_px
-                    adjusted_coords = {
-                        "x1": coords["x1"] - origin_x,
-                        "y1": coords["y1"] - origin_y,
-                        "x2": coords["x2"] - origin_x,
-                        "y2": coords["y2"] - origin_y,
-                    }
+            if structure and coords and "x1" in coords:
+                # Adjust coordinates relative to individual image
+                origin_x, origin_y = annotation.indiv_offset_px
+                adjusted_coords = {
+                    "x1": coords["x1"] - origin_x,
+                    "y1": coords["y1"] - origin_y,
+                    "x2": coords["x2"] - origin_x,
+                    "y2": coords["y2"] - origin_y,
+                }
 
-                    measurements.append({
-                        "measurement_type": structure.lower().replace(
-                            "elytra", "elytra_"
-                        ),
-                        "coords_px": adjusted_coords,
-                        "dist_cm": dist_cm,
-                    })
+                measurements.append({
+                    "measurement_type": structure.lower().replace(
+                        "elytra", "elytra_"
+                    ),
+                    "coords_px": adjusted_coords,
+                    "dist_cm": dist_cm,
+                })
 
         ann_dict["measurements"] = measurements
         json_data.append(ann_dict)
+
+    logger.info("Finished building JSON data. Writing to file...")
 
     # Save to JSON file
     with open(output_file, "w") as f:
@@ -994,11 +1062,134 @@ def save_annotations(
 
 
 @beartype.beartype
+def run_position_correction(logger: logging.Logger) -> bool:
+    """
+    Run row_template_match_rename.py to correct beetle positions before template matching.
+
+    Returns:
+        True if successful or skipped, False if failed
+    """
+    logger.info("=" * 60)
+    logger.info("STEP 1: CORRECTING BEETLE POSITIONS")
+    logger.info("=" * 60)
+
+    script_path = pathlib.Path(__file__).parent / "row_template_match_rename.py"
+
+    if not script_path.exists():
+        logger.error("row_template_match_rename.py not found at %s", script_path)
+        return False
+
+    logger.info("Running row_template_match_rename.py...")
+    logger.info("This will correct mislabeled beetle positions based on spatial layout.")
+    logger.info("Output from position correction script:")
+    logger.info("-" * 60)
+
+    try:
+        # Run the script with real-time output streaming
+        # Don't capture output - let it print directly to console
+        result = subprocess.run(
+            [sys.executable, str(script_path)],
+            check=True,
+            # Let output stream directly to console instead of capturing
+            stdout=None,
+            stderr=None,
+        )
+
+        logger.info("-" * 60)
+        logger.info("✓ Position correction completed successfully")
+        return True
+
+    except subprocess.CalledProcessError as e:
+        logger.error("-" * 60)
+        logger.error("Position correction failed with exit code %d", e.returncode)
+        return False
+    except Exception as e:
+        logger.error("Failed to run position correction: %s", e)
+        return False
+
+
+@beartype.beartype
+def run_validation_cleanup(cfg: Config, logger: logging.Logger) -> bool:
+    """
+    Run validate_beetlepalooza_annotations.py to remove invalid measurements.
+
+    Returns:
+        True if successful, False if failed
+    """
+    logger.info("=" * 60)
+    logger.info("STEP 3: VALIDATING AND CLEANING ANNOTATIONS")
+    logger.info("=" * 60)
+
+    script_path = pathlib.Path(__file__).parent / "validate_beetlepalooza_annotations.py"
+
+    if not script_path.exists():
+        logger.error("validate_beetlepalooza_annotations.py not found at %s", script_path)
+        return False
+
+    annotations_file = cfg.dump_to / "annotations.json"
+    if not annotations_file.exists():
+        logger.error("Annotations file not found at %s", annotations_file)
+        return False
+
+    logger.info("Running validation and cleanup...")
+    logger.info("This will remove measurements that fall outside individual beetle bounding boxes.")
+    logger.info("Output from validation script:")
+    logger.info("-" * 60)
+
+    try:
+        # Run the script with real-time output streaming
+        # Note: For tyro, boolean flags are passed without values
+        # --delete-invalid sets it to True, --no-delete-invalid sets to False
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(script_path),
+                "--annotations-file", str(annotations_file),
+                "--hf-root", str(cfg.hf_root),
+                "--resized-root", str(cfg.resized_root),
+                "--output-dir", str(cfg.dump_to / "validation-examples"),
+                "--delete-invalid",  # This sets delete_invalid=True
+                "--save-invalid-separately",  # This sets save_invalid_separately=True
+            ],
+            check=True,
+            # Let output stream directly to console instead of capturing
+            stdout=None,
+            stderr=None,
+        )
+
+        logger.info("-" * 60)
+        logger.info("✓ Validation and cleanup completed successfully")
+        return True
+
+    except subprocess.CalledProcessError as e:
+        logger.error("-" * 60)
+        logger.error("Validation cleanup failed with exit code %d", e.returncode)
+        return False
+    except Exception as e:
+        logger.error("Failed to run validation cleanup: %s", e)
+        return False
+
+
+@beartype.beartype
 def main(cfg: Config) -> int:
     logging.basicConfig(level=logging.INFO, format=log_format)
     logger = logging.getLogger("format-bp")
 
+    # Step 1: Run position correction if requested
+    if cfg.run_position_correction:
+        logger.info("\n" + "=" * 80)
+        logger.info("PREPROCESSING: BEETLE POSITION CORRECTION")
+        logger.info("=" * 80)
+        if not run_position_correction(logger):
+            logger.warning("Position correction failed, but continuing with formatting...")
+        logger.info("")  # Blank line for readability
+
+    logger.info("\n" + "=" * 80)
+    logger.info("STEP 2: TEMPLATE MATCHING AND ANNOTATION CREATION")
+    logger.info("=" * 80)
+
     specimens_df = load_specimens_df(cfg)
+
     logger.info("Loaded specimens_df with %d rows", len(specimens_df))
 
     measurements_df = load_measurements_df(cfg)
@@ -1082,6 +1273,24 @@ def main(cfg: Config) -> int:
         return 1
 
     save_annotations(cfg, all_annotations, measurements_df)
+
+    # Step 3: Run validation and cleanup if requested
+    if cfg.run_validation_cleanup:
+        logger.info("\n" + "=" * 80)
+        logger.info("POSTPROCESSING: VALIDATION AND CLEANUP")
+        logger.info("=" * 80)
+        if not run_validation_cleanup(cfg, logger):
+            logger.warning("Validation cleanup failed, but annotations were saved")
+        logger.info("")  # Blank line for readability
+
+    logger.info("\n" + "=" * 80)
+    logger.info("PIPELINE COMPLETE")
+    logger.info("=" * 80)
+    logger.info("Annotations saved to: %s", cfg.dump_to / "annotations.json")
+    if cfg.run_validation_cleanup:
+        logger.info("Validation results saved to: %s", cfg.dump_to / "validation_results.json")
+        logger.info("Invalid annotations backup saved to: %s", cfg.dump_to / "invalid_annotations.json")
+
     return 0
 
 
