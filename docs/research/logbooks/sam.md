@@ -209,3 +209,23 @@ While I work on data, she can work on:
 2. Objective. I need to add the gaussian heatmap regression.
 3. We also need a better decoder using the upsampling approach.
 4. Then better models (EoMT) if it's still not good enough.
+
+Let's write an issue description for the gaussian heatmap regression approach.
+
+
+# 11/23/2025
+
+Goal: Verify that Nathan's annotations are correct.
+
+How do we know?
+
+1. Do a bunch of random annotations look correct? -> mostly.
+2. Are all annotations in the image bounding box? -> yes.
+3. How many annotations from the original dataset did we keep? -> 92.4%
+4. How many images have two sets of annotations? -> Discussed in slack.
+
+Next steps:
+
+1. [sam] Show Nathan how to train on the Hawaii dataset.
+2. [someone] Write a dataloader for beetlepalooza data
+3. [sam] Bring Hanane back into it?
