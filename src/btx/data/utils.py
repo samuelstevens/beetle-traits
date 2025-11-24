@@ -1,3 +1,4 @@
+import abc
 import dataclasses
 import typing as tp
 
@@ -6,6 +7,13 @@ import grain
 import numpy as np
 from jaxtyping import Float, jaxtyped
 from PIL import Image
+
+
+@beartype.beartype
+class Config(abc.ABC):
+    @property
+    @abc.abstractmethod
+    def dataset(self): ...
 
 
 @jaxtyped(typechecker=beartype.beartype)
@@ -57,3 +65,18 @@ class Resize(grain.transforms.Map):
         sample["scale"] = np.array([scale_x, scale_y])
 
         return sample
+
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
+class GaussianHeatmap(grain.transforms.Map):
+    size: int = 256
+    """Image size in pixels."""
+    sigma: float = 3.0
+    """Standard deviation in pixels."""
+
+    def map(self, sample: dict[str, object]) -> dict[str, object]:
+        """Reads the 'tgt' key and adds a 'heatmap': Float[np.ndarray, "height width"] key-value pair to the sample dict.
+
+        The heatmap should be a Gaussian/normal distribution centered on the tgt keypoint, with a peak of 1.0 and a std dev of self.sigma.
+        """

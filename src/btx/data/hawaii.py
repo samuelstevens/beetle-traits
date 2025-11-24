@@ -73,17 +73,13 @@ logger = logging.getLogger("hawaii")
 
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
-class Config:
+class Config(utils.Config):
     hf_root: pathlib.Path = pathlib.Path("data/hawaii")
     """Path to the dataset root downloaded from HuggingFace."""
     annotations: pathlib.Path = pathlib.Path("data/hawaii-formatted/annotations.json")
     """Path to the annotations.json file made by running format_hawaii.py."""
     include_polylines: bool = True
     """Whether to include polylines (lines with more than 2 points)."""
-    n_workers: int = 4
-    """Number of dataloader workers."""
-    batch_size: int = 16
-    """Batch size."""
     split: tp.Literal["train", "val"] = "train"
     """Which split."""
     # Split-related configuration.
@@ -93,6 +89,10 @@ class Config:
     """Minimum group images per species in validation."""
     min_val_beetles: int = 20
     """Minimum beetles per species in validation."""
+
+    @property
+    def dataset(self):
+        return Dataset
 
     def __post_init__(self):
         # TODO: Check that hf_root exists and is a directory

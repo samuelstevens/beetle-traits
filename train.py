@@ -23,8 +23,6 @@ log_format = "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
 logging.basicConfig(level=logging.INFO, format=log_format)
 logger = logging.getLogger("train.py")
 
-_NUMERIC_KINDS = set("biufc")  # bool,int,uint,float,complex
-
 
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
@@ -33,8 +31,16 @@ class Config:
     """Random seed."""
     model: btx.modeling.Config = btx.modeling.frozen.Frozen()
     """Neural network config."""
-    data: btx.data.HawaiiConfig = btx.data.HawaiiConfig()
-    """Data config."""
+    hawaii: btx.data.HawaiiConfig = btx.data.HawaiiConfig()
+    """Hawaii data config."""
+    beetlepalooza: btx.data.BeetlePaloozaConfig = btx.data.BeetlePaloozaConfig()
+    """BeetlePalooza data config."""
+    biorepo: btx.data.BioRepoConfig = btx.data.BioRepoConfig()
+    """BioRepo data config."""
+    batch_size: int = 256
+    """Batch size."""
+    n_workers: int = 4
+    """Number of dataloader workers."""
     tags: list[str] = dataclasses.field(default_factory=list)
     """List of wandb tags to include."""
     save_every: int = 200
@@ -55,28 +61,60 @@ class Config:
 
 
 @beartype.beartype
-def make_dataloader(cfg: btx.data.HawaiiConfig):
-    source = btx.data.HawaiiDataset(cfg)
-    shuffle = cfg.split == "train"
-    n_epochs = None if cfg.split == "train" else 1
-    sampler = grain.samplers.IndexSampler(
-        num_records=len(source), shuffle=shuffle, num_epochs=n_epochs, seed=cfg.seed
-    )
-    ops = [
-        btx.data.utils.DecodeRGB(),
-        btx.data.utils.Resize(),
-        grain.transforms.Batch(batch_size=cfg.batch_size, drop_remainder=False),
-    ]
-    loader = grain.DataLoader(
-        data_source=source,
-        sampler=sampler,
-        operations=ops,
-        worker_count=cfg.n_workers,
-        worker_buffer_size=2,  # per-worker prefetch of output batches
-        read_options=grain.ReadOptions(num_threads=2, prefetch_buffer_size=64),
+def make_dataset(
+    cfgs: list[btx.data.Config],
+    *,
+    seed: int,
+    batch_size: int,
+    n_workers: int,
+    shuffle: bool,
+    finite: bool,
+):
+    datasets = []
+    weights = []
+
+    for cfg in cfgs:
+        source = cfg.dataset(cfg)
+        assert isinstance(source, grain.sources.RandomAccessDataSource)
+
+        if len(source) == 0:
+            continue
+
+        ds = grain.MapDataset.source(source).seed(seed)
+        if shuffle:
+            ds = ds.shuffle()
+        ds = ds.map(btx.data.utils.DecodeRGB()).map(btx.data.utils.Resize())
+
+        datasets.append(ds)
+        weights.append(len(source))
+
+    assert datasets, "No datasets provided."
+
+    if len(datasets) == 1:
+        mixed = datasets[0]
+    else:
+        total = sum(weights)
+        assert total > 0, "All datasets are empty."
+        mix_weights = [w / total for w in weights]
+        mixed = grain.MapDataset.mix(datasets, weights=mix_weights)
+
+    epochs = None if not finite else 1
+    mixed = mixed.repeat(num_epochs=epochs)
+
+    mixed = mixed.batch(batch_size=batch_size, drop_remainder=False)
+
+    iter_ds = mixed.to_iter_dataset(
+        read_options=grain.ReadOptions(num_threads=2, prefetch_buffer_size=64)
     )
 
-    return loader
+    if n_workers > 0:
+        iter_ds = iter_ds.mp_prefetch(
+            grain.multiprocessing.MultiprocessingOptions(
+                num_workers=n_workers, per_worker_buffer_size=2
+            )
+        )
+
+    return iter_ds
 
 
 @jaxtyped(typechecker=beartype.beartype)
@@ -262,10 +300,29 @@ def to_device(batch: dict[str, object], device=None) -> tuple:
 @beartype.beartype
 def train(cfg: Config):
     key = jax.random.key(seed=cfg.seed)
-    val_cfg = dataclasses.replace(cfg.data, split="val", seed=cfg.seed)
-    train_cfg = dataclasses.replace(cfg.data, split="train", seed=cfg.seed)
-    val_dl = make_dataloader(val_cfg)
-    train_dl = make_dataloader(train_cfg)
+
+    val_dl = make_dataset(
+        [dataclasses.replace(cfg.hawaii, split="val")],
+        seed=cfg.seed,
+        batch_size=cfg.batch_size,
+        n_workers=cfg.n_workers,
+        shuffle=False,
+        finite=True,
+    )
+
+    train_cfgs = [
+        dataclasses.replace(cfg.biorepo, split="train"),
+        dataclasses.replace(cfg.hawaii, split="train"),
+        dataclasses.replace(cfg.beetlepalooza),
+    ]
+    train_dl = make_dataset(
+        train_cfgs,
+        seed=cfg.seed,
+        batch_size=cfg.batch_size,
+        n_workers=cfg.n_workers,
+        shuffle=True,
+        finite=False,
+    )
 
     model = btx.modeling.make(cfg.model, key)
 
