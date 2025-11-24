@@ -494,14 +494,12 @@ class VisionTransformer(eqx.Module):
         for block in self.blocks:
             x_nd = block(x_nd, rope_2nd)
 
-        if self.cfg.untie_global_and_local_cls_norm:
-            x_cls_reg_nd = x_nd[: self.cfg.n_storage_tokens + 1]
-            x_norm_cls_reg = jax.vmap(self.norm)(x_cls_reg_nd)
-        else:
-            x_norm_nd = jax.vmap(self.norm)(x_nd)
-            x_norm_cls_reg = x_norm_nd[: self.cfg.n_storage_tokens + 1]
+        x_norm_nd = jax.vmap(self.norm)(x_nd)
+        x_norm_cls_d = x_norm_nd[0]
+        x_norm_patch_nd = x_norm_nd[self.cfg.n_storage_tokens + 1 :]
 
-        return x_norm_cls_reg[0]
+        output = {"cls": x_norm_cls_d, "patches": x_norm_patch_nd}
+        return output
 
 
 @beartype.beartype

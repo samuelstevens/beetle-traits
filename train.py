@@ -49,7 +49,6 @@ class Config:
     learning_rate: float = 3e-4
 
     wandb_project: str = "beetle-traits"
-    wandb_entity: str = "samuelstevens"
     slurm_acct: str = ""
     slurm_partition: str = ""
     n_hours: float = 2.0
@@ -274,10 +273,7 @@ def train(cfg: Config):
     state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
     run = wandb.init(
-        project=cfg.wandb_project,
-        entity=cfg.wandb_entity,
-        config=dataclasses.asdict(cfg),
-        tags=cfg.tags,
+        project=cfg.wandb_project, config=dataclasses.asdict(cfg), tags=cfg.tags
     )
 
     # Training

@@ -6,21 +6,20 @@ This repo annotates beetle elytra widths and lengths from top-down specimen imag
 
 Clone the repo.
 
-Then run the training script:
+Then run the training script (on the login node :smiling_imp:):
 
 ```sh
 uv run launch.py \
   --tags frozen \
   --data.hf-root /fs/scratch/PAS2136/samuelstevens/datasets/hawaii-beetles \
   --data.no-include-polylines \
-  --val-every 10000000 \
+  --val-every 10 \
   --save-every 50 \
-  --slurm-acct PAS2136 \
-  --slurm-partition nextgen \
-  --n-hours 1 \
   model:frozen \
   --model.dinov3-ckpt /fs/ess/PAS2136/samuelstevens/models/dinov3-jax/dinov3_vits16.eqx
 ```
+
+If nothing blows up, and you see some training logs, you're training!
 
 ## Data
 

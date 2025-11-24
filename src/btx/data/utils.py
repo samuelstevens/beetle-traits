@@ -33,6 +33,7 @@ class DecodeRGB(grain.transforms.Map):
         return sample
 
 
+@beartype.beartype
 @dataclasses.dataclass(frozen=True)
 class Resize(grain.transforms.Map):
     size: int = 256

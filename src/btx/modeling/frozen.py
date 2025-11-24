@@ -14,7 +14,6 @@ from . import dinov3
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
 class Frozen:
-    img_size: int = 256
     dinov3_ckpt: pathlib.Path = pathlib.Path("models/dinov3_vitb16.eqx")
 
 
@@ -32,6 +31,6 @@ class Model(eqx.Module):
         self, x_hwc: Float[Array, "h w c"], *, key: chex.PRNGKey | None = None
     ) -> Float[Array, "2 2 2"]:
         x_cwh = einops.rearrange(x_hwc, "h w c -> c h w")
-        x_d = self.vit(x_cwh)
-        coords = self.head(x_d)
+        out = self.vit(x_cwh)
+        coords = self.head(out["cls"])
         return coords.reshape(2, 2, 2)
