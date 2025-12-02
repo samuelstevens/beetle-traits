@@ -644,7 +644,7 @@ def load_measurements_df(cfg: Config) -> pl.DataFrame:
 
     df = pl.read_csv(measurements_path)
 
-    # Parse the coords_pix JSON string
+    # Parse the coords_pix and scalebar JSON strings
     def parse_coords(coords_str):
         if coords_str:
             try:
@@ -660,6 +660,7 @@ def load_measurements_df(cfg: Config) -> pl.DataFrame:
         pl.col("pictureID").alias("GroupImgBasename"),
         pl.col("individual").alias("BeetlePosition"),
         pl.col("coords_pix").map_elements(parse_coords, return_dtype=pl.Object),
+        pl.col("scalebar").map_elements(parse_coords, return_dtype=pl.Object),
     )
 
     return df
@@ -1024,12 +1025,24 @@ def save_annotations(
         key = (annotation.group_img_basename, annotation.beetle_position)
         measurement_rows = measurements_by_key.get(key, [])
 
+        # Extract scale bar information (same for all measurements of this beetle)
+        scalebar = None
+        if measurement_rows:
+            first_row = measurement_rows[0]
+            scalebar = first_row.get("scalebar", {})
+
+        # Add scale bar to annotation
+        if scalebar and "x1" in scalebar:
+            ann_dict["scalebar_px"] = scalebar
+
         # Add measurements if available
         measurements = []
         for row in measurement_rows:
             structure = row.get("structure", "")
             coords = row.get("coords_pix", {})
             dist_cm = row.get("dist_cm", None)
+            user_name = row.get("user_name", "")
+
 
             if structure and coords and "x1" in coords:
                 # Adjust coordinates relative to individual image
@@ -1047,6 +1060,7 @@ def save_annotations(
                     ),
                     "coords_px": adjusted_coords,
                     "dist_cm": dist_cm,
+                    "annotator": user_name
                 })
 
         ann_dict["measurements"] = measurements
@@ -1062,7 +1076,7 @@ def save_annotations(
 
 
 @beartype.beartype
-def run_position_correction(logger: logging.Logger) -> bool:
+def run_position_correction(cfg: Config, logger: logging.Logger) -> bool:
     """
     Run row_template_match_rename.py to correct beetle positions before template matching.
 
@@ -1086,9 +1100,17 @@ def run_position_correction(logger: logging.Logger) -> bool:
 
     try:
         # Run the script with real-time output streaming
-        # Don't capture output - let it print directly to console
+        # Pass config parameters to the script
         result = subprocess.run(
-            [sys.executable, str(script_path)],
+            [
+                sys.executable,
+                str(script_path),
+                "--hf-root", str(cfg.hf_root),
+                "--resized-root", str(cfg.resized_root),
+                "--output-dir", str(cfg.dump_to / "position_correction_output"),
+                "--no-dry-run",  # Actually perform the renames
+                "--process-all-images",  # Process all images
+            ],
             check=True,
             # Let output stream directly to console instead of capturing
             stdout=None,
@@ -1180,7 +1202,7 @@ def main(cfg: Config) -> int:
         logger.info("\n" + "=" * 80)
         logger.info("PREPROCESSING: BEETLE POSITION CORRECTION")
         logger.info("=" * 80)
-        if not run_position_correction(logger):
+        if not run_position_correction(cfg, logger):
             logger.warning("Position correction failed, but continuing with formatting...")
         logger.info("")  # Blank line for readability
 

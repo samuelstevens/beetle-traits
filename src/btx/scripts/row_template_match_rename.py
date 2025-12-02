@@ -41,52 +41,74 @@ across images with different-sized beetles.
 
 import ast
 import csv
+import dataclasses
 import pathlib
 from datetime import datetime
 from typing import NamedTuple
 
+import beartype
 import numpy as np
 import polars as pl
 import skimage.feature
+import tyro
 from PIL import Image, ImageDraw, ImageFont
 
-# CONFIGURATION
-DATA_ROOT = pathlib.Path("./data/beetlepalooza")
-MEASUREMENTS_CSV = DATA_ROOT / "BeetleMeasurements.csv"
-METADATA_CSV = DATA_ROOT / "individual_specimens" / "metadata.csv"
-GROUP_IMAGES_DIR = DATA_ROOT / "group_images_resized"
-INDIVIDUAL_IMAGES_DIR = DATA_ROOT / "individual_specimens"
-OUTPUT_DIR = pathlib.Path(f"{DATA_ROOT}/template_match_output")
 
-# Test configuration
-PROCESS_ALL_IMAGES = True  # Set to True to process all images in metadata
-TEST_GROUP_IMAGES = [
-    # Only used if PROCESS_ALL_IMAGES = False
-    "A00000046183.jpg",
-    "A00000051535.jpg",
-    "A00000041403.jpg",
-    "A00000009160.jpg",
-    "A00000041381.jpg",
-    "A00000051535.jpg",
-]
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
+class Config:
+    hf_root: pathlib.Path = pathlib.Path("./data/beetlepalooza/individual_specimens")
+    """Where individual specimen images are stored (individual_specimens directory)."""
 
-# File renaming settings
-DRY_RUN = (
-    True  # Set to False to actually rename files (True = just show what would happen)
-)
-CREATE_RENAME_LOG = True  # Create a log file of all renames
+    resized_root: pathlib.Path = pathlib.Path("./data/beetlepalooza/group_images_resized")
+    """Where resized group images are stored."""
 
-# Row detection settings (dynamic, based on beetle height)
-ROW_CENTER_TOLERANCE_RATIO = 50 / 221.4  # Ratio of tolerance to average beetle height
-SCALEBAR_ROW_TOLERANCE_RATIO = 50 / 221.4  # Ratio for scale bar row detection
+    output_dir: pathlib.Path = pathlib.Path("./data/beetlepalooza/template_match_output")
+    """Where to save visualizations and rename logs."""
 
-# Visualization settings
-BBOX_COLOR = (255, 0, 0)  # Red for bounding boxes
-BBOX_WIDTH = 4
-ELYTRA_LENGTH_COLOR = (0, 255, 0)  # Green
-ELYTRA_WIDTH_COLOR = (255, 255, 0)  # Yellow
-MEASUREMENT_WIDTH = 3
-TEXT_COLOR = (255, 255, 255)  # White
+    process_all_images: bool = True
+    """Set to True to process all images in metadata, False to use test_group_images list."""
+
+    test_group_images: list[str] = dataclasses.field(default_factory=lambda: [
+        "A00000046183.jpg",
+        "A00000051535.jpg",
+        "A00000041403.jpg",
+        "A00000009160.jpg",
+        "A00000041381.jpg",
+        "A00000051535.jpg",
+    ])
+    """Only used if process_all_images = False."""
+
+    dry_run: bool = True
+    """Set to False to actually rename files (True = just show what would happen)."""
+
+    create_rename_log: bool = True
+    """Create a log file of all renames."""
+
+    row_center_tolerance_ratio: float = 50 / 221.4
+    """Ratio of tolerance to average beetle height."""
+
+    scalebar_row_tolerance_ratio: float = 50 / 221.4
+    """Ratio for scale bar row detection."""
+
+    # Visualization settings
+    bbox_color: tuple[int, int, int] = (255, 0, 0)
+    """Red for bounding boxes."""
+
+    bbox_width: int = 4
+    """Width of bounding box lines."""
+
+    elytra_length_color: tuple[int, int, int] = (0, 255, 0)
+    """Green for elytra length measurements."""
+
+    elytra_width_color: tuple[int, int, int] = (255, 255, 0)
+    """Yellow for elytra width measurements."""
+
+    measurement_width: int = 3
+    """Width of measurement lines."""
+
+    text_color: tuple[int, int, int] = (255, 255, 255)
+    """White for text labels."""
 
 
 class BeetleMatch(NamedTuple):
@@ -166,14 +188,14 @@ def create_new_filename(old_path: str, new_position: int) -> str:
 
 
 def update_metadata_csv(
-    rename_ops: list[RenameOperation], dry_run: bool = True
+    rename_ops: list[RenameOperation], cfg: Config
 ) -> tuple[int, int]:
     """
     Update metadata.csv to reflect renamed files.
 
     Args:
         rename_ops: List of successfully completed rename operations
-        dry_run: If True, only show what would be updated
+        cfg: Configuration object
 
     Returns:
         Tuple of (successful_updates, failed_updates)
@@ -182,13 +204,26 @@ def update_metadata_csv(
     print("UPDATING METADATA CSV")
     print("=" * 60)
 
-    if not METADATA_CSV.exists():
-        print(f"ERROR: Metadata CSV not found at {METADATA_CSV}")
+    # Try different possible locations for metadata.csv
+    possible_paths = [
+        cfg.hf_root / "metadata.csv",
+        cfg.hf_root / "Separate_segmented_train_test_splits_80_20" / "metadata.csv",
+        cfg.hf_root.parent / "individual_specimens.csv",
+    ]
+
+    metadata_csv = None
+    for path in possible_paths:
+        if path.exists():
+            metadata_csv = path
+            break
+
+    if metadata_csv is None:
+        print(f"ERROR: Metadata CSV not found. Tried: {possible_paths}")
         return 0, len(rename_ops)
 
     # Load metadata
-    print(f"Loading metadata from {METADATA_CSV}")
-    metadata_df = pl.read_csv(METADATA_CSV)
+    print(f"Loading metadata from {metadata_csv}")
+    metadata_df = pl.read_csv(metadata_csv)
     print(f"  Loaded {len(metadata_df)} rows")
 
     # Create a mapping of old paths to new paths
@@ -208,7 +243,7 @@ def update_metadata_csv(
     successful = 0
     failed = 0
 
-    if dry_run:
+    if cfg.dry_run:
         print("\n[DRY RUN] Would update the following metadata rows:")
         for old_path, new_path in path_updates.items():
             # Check if this path exists in metadata
@@ -241,8 +276,8 @@ def update_metadata_csv(
 
         # Save updated metadata
         print(f"\nUpdating {changes} paths in metadata.csv...")
-        updated_df.write_csv(METADATA_CSV)
-        print(f"✓ Saved updated metadata to {METADATA_CSV}")
+        updated_df.write_csv(metadata_csv)
+        print(f"✓ Saved updated metadata to {metadata_csv}")
 
         successful = changes
         failed = len(rename_ops) - changes
@@ -373,6 +408,7 @@ def load_scale_bar(measurements_df: pl.DataFrame, picture_id: str) -> ScaleBar:
 def template_match_beetles(
     group_image_path: pathlib.Path,
     individual_paths: list[tuple[str, int]],  # (path, filename_position)
+    cfg: Config,
 ) -> list[BeetleMatch]:
     """
     Template match all individual beetles on the group image.
@@ -380,6 +416,7 @@ def template_match_beetles(
     Args:
         group_image_path: Path to group image
         individual_paths: List of (individual_image_path, filename_position) tuples
+        cfg: Configuration object
 
     Returns:
         List of BeetleMatch objects with coordinates and scores
@@ -391,11 +428,11 @@ def template_match_beetles(
     matches = []
 
     for indiv_path_str, filename_pos in individual_paths:
-        indiv_path = INDIVIDUAL_IMAGES_DIR / indiv_path_str
+        indiv_path = cfg.hf_root / indiv_path_str
         # Strip prefix if present
         if indiv_path_str.startswith("individual_specimens/"):
             indiv_path_str = indiv_path_str[len("individual_specimens/") :]
-            indiv_path = INDIVIDUAL_IMAGES_DIR / indiv_path_str
+            indiv_path = cfg.hf_root / indiv_path_str
 
         print(
             f"\n  Template matching: {indiv_path.name} (filename says position {filename_pos})"
@@ -699,6 +736,7 @@ def visualize_results(
     picture_id: str,
     scale_bar: ScaleBar,
     output_path: pathlib.Path,
+    cfg: Config,
 ):
     """
     Draw bounding boxes and measurements on the group image.
@@ -757,7 +795,7 @@ def visualize_results(
 
         # Draw bounding box
         bbox = [match.x, match.y, match.x + match.width, match.y + match.height]
-        draw.rectangle(bbox, outline=BBOX_COLOR, width=BBOX_WIDTH)
+        draw.rectangle(bbox, outline=cfg.bbox_color, width=cfg.bbox_width)
 
         # Draw horizontal alignment reference lines
         center_y = match.y + match.height / 2
@@ -790,7 +828,7 @@ def visualize_results(
         # Draw text with background for visibility
         bbox_text = draw.textbbox(text_pos, label, font=font)
         draw.rectangle(bbox_text, fill=(0, 0, 0))
-        draw.text(text_pos, label, fill=TEXT_COLOR, font=font)
+        draw.text(text_pos, label, fill=cfg.text_color, font=font)
 
         # Get and draw measurements
         measurements = get_measurements(measurements_df, picture_id, inferred_pos)
@@ -799,8 +837,8 @@ def visualize_results(
             coords = measurements["ElytraLength"]
             draw.line(
                 [(coords["x1"], coords["y1"]), (coords["x2"], coords["y2"])],
-                fill=ELYTRA_LENGTH_COLOR,
-                width=MEASUREMENT_WIDTH,
+                fill=cfg.elytra_length_color,
+                width=cfg.measurement_width,
             )
             print(
                 f"  Drew ElytraLength: ({coords['x1']}, {coords['y1']}) -> ({coords['x2']}, {coords['y2']})"
@@ -810,8 +848,8 @@ def visualize_results(
             coords = measurements["ElytraWidth"]
             draw.line(
                 [(coords["x1"], coords["y1"]), (coords["x2"], coords["y2"])],
-                fill=ELYTRA_WIDTH_COLOR,
-                width=MEASUREMENT_WIDTH,
+                fill=cfg.elytra_width_color,
+                width=cfg.measurement_width,
             )
             print(
                 f"  Drew ElytraWidth: ({coords['x1']}, {coords['y1']}) -> ({coords['x2']}, {coords['y2']})"
@@ -824,7 +862,7 @@ def visualize_results(
 
 
 def process_single_image(
-    test_group_image: str, measurements_df: pl.DataFrame, metadata_df: pl.DataFrame
+    test_group_image: str, measurements_df: pl.DataFrame, metadata_df: pl.DataFrame, cfg: Config
 ) -> list[RenameOperation]:
     """
     Process a single group image.
@@ -872,12 +910,12 @@ def process_single_image(
         individual_paths.append((path, claimed_pos))
 
     # Template match all beetles
-    group_image_path = GROUP_IMAGES_DIR / test_group_image
+    group_image_path = cfg.resized_root / test_group_image
     if not group_image_path.exists():
         print(f"ERROR: Group image not found at {group_image_path}, skipping...")
         return rename_operations
 
-    matches = template_match_beetles(group_image_path, individual_paths)
+    matches = template_match_beetles(group_image_path, individual_paths, cfg)
 
     if not matches:
         print("\nERROR: No successful template matches!")
@@ -897,8 +935,8 @@ def process_single_image(
     print(f"  Height range: {min_height} - {max_height} pixels")
 
     # Calculate dynamic thresholds based on average beetle height
-    row_center_tolerance = avg_height * ROW_CENTER_TOLERANCE_RATIO
-    scalebar_row_tolerance = avg_height * SCALEBAR_ROW_TOLERANCE_RATIO
+    row_center_tolerance = avg_height * cfg.row_center_tolerance_ratio
+    scalebar_row_tolerance = avg_height * cfg.scalebar_row_tolerance_ratio
 
     print("\nDynamic thresholds (based on avg height):")
     print(f"  Row center tolerance: {row_center_tolerance:.1f} pixels")
@@ -910,7 +948,7 @@ def process_single_image(
     )
 
     # Visualize results
-    output_path = OUTPUT_DIR / f"{test_group_image.replace('.jpg', '_annotated.png')}"
+    output_path = cfg.output_dir / f"{test_group_image.replace('.jpg', '_annotated.png')}"
     visualize_results(
         group_image_path,
         position_map,
@@ -918,6 +956,7 @@ def process_single_image(
         test_group_image,
         scale_bar,
         output_path,
+        cfg,
     )
 
     # Create rename operations for files that need position correction
@@ -932,8 +971,8 @@ def process_single_image(
             old_relative = match.individual_path
             new_relative = create_new_filename(old_relative, inferred_pos)
 
-            old_full_path = INDIVIDUAL_IMAGES_DIR / old_relative
-            new_full_path = INDIVIDUAL_IMAGES_DIR / new_relative
+            old_full_path = cfg.hf_root / old_relative
+            new_full_path = cfg.hf_root / new_relative
 
             rename_op = RenameOperation(
                 old_path=old_full_path,
@@ -963,20 +1002,47 @@ def process_single_image(
     return rename_operations
 
 
-def main():
+def main(cfg: Config) -> int:
     print("=" * 80)
     print("BEETLE POSITION INFERENCE AND TEMPLATE MATCHING")
     print("=" * 80)
 
     # Load data once
     print("\nLoading data...")
-    measurements_df = pl.read_csv(MEASUREMENTS_CSV)
-    metadata_df = pl.read_csv(METADATA_CSV)
+
+    # Find measurements CSV
+    measurements_csv = cfg.hf_root.parent / "BeetleMeasurements.csv"
+    if not measurements_csv.exists():
+        measurements_csv = cfg.hf_root / "BeetleMeasurements.csv"
+
+    if not measurements_csv.exists():
+        print(f"ERROR: BeetleMeasurements.csv not found at {measurements_csv}")
+        return 1
+
+    # Find metadata CSV
+    possible_metadata_paths = [
+        cfg.hf_root / "metadata.csv",
+        cfg.hf_root / "Separate_segmented_train_test_splits_80_20" / "metadata.csv",
+        cfg.hf_root.parent / "individual_specimens.csv",
+    ]
+
+    metadata_csv = None
+    for path in possible_metadata_paths:
+        if path.exists():
+            metadata_csv = path
+            break
+
+    if metadata_csv is None:
+        print(f"ERROR: Metadata CSV not found. Tried: {possible_metadata_paths}")
+        return 1
+
+    measurements_df = pl.read_csv(measurements_csv)
+    metadata_df = pl.read_csv(metadata_csv)
     print(f"  Measurements: {len(measurements_df)} rows")
     print(f"  Metadata: {len(metadata_df)} rows")
 
     # Determine which images to process
-    if PROCESS_ALL_IMAGES:
+    if cfg.process_all_images:
         # Get all unique group images from metadata
         all_group_images = (
             metadata_df.get_column("groupImageFilePath").unique().to_list()
@@ -985,7 +1051,7 @@ def main():
         images_to_process = [path.split("/")[-1] for path in all_group_images]
         print(f"\nProcessing ALL {len(images_to_process)} group images from metadata")
     else:
-        images_to_process = TEST_GROUP_IMAGES
+        images_to_process = cfg.test_group_images
         print(f"\nProcessing {len(images_to_process)} specified test images")
 
     # Process each image and collect rename operations
@@ -998,7 +1064,7 @@ def main():
         print(f"# IMAGE {idx}/{len(images_to_process)}: {test_image}")
         print(f"{'#' * 80}")
         try:
-            rename_ops = process_single_image(test_image, measurements_df, metadata_df)
+            rename_ops = process_single_image(test_image, measurements_df, metadata_df, cfg)
             all_rename_operations.extend(rename_ops)
             successful_images += 1
         except Exception as e:
@@ -1016,18 +1082,18 @@ def main():
     print(f"Images processed successfully: {successful_images}")
     print(f"Images failed: {failed_images}")
     print(f"Total files needing rename: {len(all_rename_operations)}")
-    print(f"Output directory: {OUTPUT_DIR}")
+    print(f"Output directory: {cfg.output_dir}")
 
     if len(all_rename_operations) == 0:
         print("\nNo files need to be renamed - all positions are correct!")
-        return
+        return 0
 
     # Create rename log if requested
-    if CREATE_RENAME_LOG:
+    if cfg.create_rename_log:
         log_file = (
-            OUTPUT_DIR / f"rename_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            cfg.output_dir / f"rename_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         )
-        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        cfg.output_dir.mkdir(parents=True, exist_ok=True)
 
         with open(log_file, "w", newline="") as f:
             writer = csv.writer(f)
@@ -1050,14 +1116,14 @@ def main():
 
     # Execute renames
     print("\n" + "=" * 80)
-    if DRY_RUN:
+    if cfg.dry_run:
         print("DRY RUN MODE - No files will be renamed")
     else:
         print("EXECUTING FILE RENAMES")
     print("=" * 80)
 
     successful, failed, completed_ops = execute_renames(
-        all_rename_operations, dry_run=DRY_RUN
+        all_rename_operations, dry_run=cfg.dry_run
     )
 
     print("\nRename results:")
@@ -1067,19 +1133,25 @@ def main():
     # Update metadata.csv to reflect the renamed files
     if len(completed_ops) > 0:
         metadata_success, metadata_failed = update_metadata_csv(
-            completed_ops, dry_run=DRY_RUN
+            completed_ops, cfg
         )
         print("\nMetadata update results:")
         print(f"  Updated: {metadata_success}")
         print(f"  Not found in metadata: {metadata_failed}")
 
-    if DRY_RUN:
+    if cfg.dry_run:
         print(
-            "\nTo actually rename files and update metadata, set DRY_RUN = False in the configuration"
+            "\nTo actually rename files and update metadata, set --no-dry-run when running the script"
         )
     else:
         print("\nFiles have been renamed and metadata.csv has been updated!")
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    try:
+        raise SystemExit(main(tyro.cli(Config)))
+    except KeyboardInterrupt:
+        print("Interrupted.")
+        raise SystemExit(130)
