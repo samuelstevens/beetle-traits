@@ -146,7 +146,7 @@ def test_sample_matches_utils_sample_type(cfg):
 
 
 def test_index_out_of_range_fails(cfg):
-    "Tests that a sample out of of the range of the dataset returns an error"
+    """Tests that a sample out of the range of the dataset returns an error"""
     ds = beetlepalooza.Dataset(cfg)
 
     with pytest.raises(pl.exceptions.OutOfBoundsError):

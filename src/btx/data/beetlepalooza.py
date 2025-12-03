@@ -54,7 +54,7 @@ class Config(utils.Config):
 @beartype.beartype
 def _trusted_data(cfg: Config) -> pl.DataFrame:
     """
-    Filter the annotations to only include trusted annotaters
+    Filter the annotations to only include trusted annotators
     """
     annotations_df = pl.read_json(cfg.annotations)
     annotations_df_ex = (
@@ -71,7 +71,7 @@ def _trusted_data(cfg: Config) -> pl.DataFrame:
     # remove annotations with no measurements
     annotations_df_ex = annotations_df_ex.filter(~pl.col("measurements").is_null())
 
-    # check if each group of individual_id has 1 elyta_width and 1 elytra_length measurements from trusted sources
+    # check if each group of individual_id has 1 elytra_width and 1 elytra_length measurements from trusted sources
     annotations_trusted = (
     annotations_df_ex
     .with_columns([
@@ -93,7 +93,7 @@ def _trusted_data(cfg: Config) -> pl.DataFrame:
     ])
     # keep rows where the group doesn't have a trusted width or length, is trusted, 
     # isn't trusted but is a length measurement 
-    # and group doesn't have a trusted length mesurement, or isn't trusted but is width measurement and group doesn't have a trusted length measurement
+    # and group doesn't have a trusted length measurement, or isn't trusted but is width measurement and group doesn't have a trusted length measurement
     .filter((
         (~pl.col("group_has_trusted_length") & ~pl.col("group_has_trusted_width")) | 
         (pl.col("is_trusted")) |
@@ -123,6 +123,8 @@ class Dataset(grain.sources.RandomAccessDataSource):
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.df = _trusted_data(cfg)
+        self.logger = logging.getLogger("beetle_palooza-ds")
+        self.logger.warning("elytra_width measurements are inaccurate")
 
     def __len__(self) -> int:
         return self.df.height
@@ -143,17 +145,37 @@ class Dataset(grain.sources.RandomAccessDataSource):
         elytra_length_px = None
 
         # Convert scalebar struct to list
-        scalebar_struct = row["scalebar_px"]
-        scalebar_px = [scalebar_struct["x1"], scalebar_struct["y1"], scalebar_struct["x2"], scalebar_struct["y2"]]
+        scalebar_struct = row.get("scalebar_px", None)
+        if scalebar_struct is None:
+            self.logger.error("Image %s beetle %d has no scalebar struct in row; using default.", 
+                              row.get("group_img_rel_path", "<unknown>"), 
+                              row.get("beetle_position", -1))
+            scalebar_px = [0.0, 0.0, 1.0, 1.0]
+        else:
+            # Defensive extraction in case the struct shape differs; ensure floats
+            scalebar_px = [
+				float(scalebar_struct["x1"]),
+				float(scalebar_struct["y1"]),
+				float(scalebar_struct["x2"]),
+				float(scalebar_struct["y2"]),
+			]
 
         for measurement in row["measurements"]:
-
+            coords = measurement["coords_px"]
             if measurement["measurement_type"] == "elytra_length":
-                coords = measurement["coords_px"]
-                elytra_length_px = [coords["x1"], coords["y1"], coords["x2"], coords["y2"]]
+                elytra_length_px = [
+					float(coords["x1"]),
+					float(coords["y1"]),
+					float(coords["x2"]),
+					float(coords["y2"]),
+				]
             else:
-                coords = measurement["coords_px"]
-                elytra_width_px = [coords["x1"], coords["y1"], coords["x2"], coords["y2"]]
+                elytra_width_px = [
+					float(coords["x1"]),
+					float(coords["y1"]),
+					float(coords["x2"]),
+					float(coords["y2"]),
+				]
 
         if elytra_width_px is None:
             self.logger.error(
@@ -169,18 +191,10 @@ class Dataset(grain.sources.RandomAccessDataSource):
                 row["beetle_position"],
             )
             elytra_length_px = [0.0, 0.0, 0.0, 0.0]
-        if scalebar_px is None:
-            self.logger.error(
-                "Image %s beetle %d has no scalebar.",
-                row["group_img_rel_path"],
-                row["beetle_position"],
-            )
-            scalebar_px = [0.0, 0.0, 1.0, 1.0]
         
         if self.cfg.include_polylines:
             raise NotImplementedError()
         
-        logger.info("Warning: elytra_width measurements are inaccurate")
         
         return utils.Sample(
             img_fpath=str(fpath),
