@@ -3,8 +3,8 @@
 from pathlib import Path
 
 import numpy as np
-import pytest
 import polars as pl
+import pytest
 
 from btx.data import beetlepalooza, utils
 
@@ -143,6 +143,7 @@ def test_sample_matches_utils_sample_type(cfg):
     assert isinstance(sample["beetle_id"], str)
     assert isinstance(sample["beetle_position"], (int, np.integer))
     assert isinstance(sample["group_img_basename"], str)
+
 
 def test_index_out_of_range_fails(cfg):
     "Tests that a sample out of of the range of the dataset returns an error"
