@@ -5,14 +5,14 @@ This script loads annotations.json, finds a specific beetle by individual_id,
 and draws all measurements on the individual beetle image.
 """
 
+import dataclasses
 import json
 import logging
 import pathlib
-import dataclasses
 
 import beartype
 import tyro
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 log_format = "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
 
@@ -90,18 +90,28 @@ def visualize_individual(
         x2, y2 = coords["x2"], coords["y2"]
 
         # Get color for this measurement type
-        color = measurement_colors.get(measurement_type, (255, 0, 255))  # Magenta default
+        color = measurement_colors.get(
+            measurement_type, (255, 0, 255)
+        )  # Magenta default
 
         # Check if coordinates are within bounds
         in_bounds = (
-            0 <= x1 <= img_width and 0 <= x2 <= img_width and
-            0 <= y1 <= img_height and 0 <= y2 <= img_height
+            0 <= x1 <= img_width
+            and 0 <= x2 <= img_width
+            and 0 <= y1 <= img_height
+            and 0 <= y2 <= img_height
         )
 
         if not in_bounds:
             logger.warning(
                 "Measurement %s has out-of-bounds coords: (%d,%d)-(%d,%d) for image %dx%d",
-                measurement_type, int(x1), int(y1), int(x2), int(y2), img_width, img_height
+                measurement_type,
+                int(x1),
+                int(y1),
+                int(x2),
+                int(y2),
+                img_width,
+                img_height,
             )
             # Use red for out-of-bounds
             color = (255, 0, 0)
@@ -111,8 +121,8 @@ def visualize_individual(
 
         # Draw circles at endpoints
         radius = 5
-        draw.ellipse([x1-radius, y1-radius, x1+radius, y1+radius], fill=color)
-        draw.ellipse([x2-radius, y2-radius, x2+radius, y2+radius], fill=color)
+        draw.ellipse([x1 - radius, y1 - radius, x1 + radius, y1 + radius], fill=color)
+        draw.ellipse([x2 - radius, y2 - radius, x2 + radius, y2 + radius], fill=color)
 
         # Try to add text label (may fail if no font available)
         try:
@@ -134,9 +144,12 @@ def visualize_individual(
         logger.info(
             "  %s: (%d,%d)->(%d,%d) [%s] %s",
             measurement_type,
-            int(x1), int(y1), int(x2), int(y2),
+            int(x1),
+            int(y1),
+            int(x2),
+            int(y2),
             "in bounds" if in_bounds else "OUT OF BOUNDS",
-            f"{dist_cm:.3f} cm" if dist_cm else ""
+            f"{dist_cm:.3f} cm" if dist_cm else "",
         )
 
     # Save visualization
@@ -179,7 +192,11 @@ def main(cfg: Config) -> int:
     logger.info("Found annotation for %s", cfg.individual_id)
     logger.info("  Group image: %s", target_annotation.get("group_img_basename"))
     logger.info("  Beetle position: %s", target_annotation.get("beetle_position"))
-    logger.info("  Origin: (%s, %s)", target_annotation.get("origin_x"), target_annotation.get("origin_y"))
+    logger.info(
+        "  Origin: (%s, %s)",
+        target_annotation.get("origin_x"),
+        target_annotation.get("origin_y"),
+    )
     logger.info("  NCC score: %.4f", target_annotation.get("ncc", 0.0))
 
     # Create output directory
