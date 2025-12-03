@@ -123,8 +123,8 @@ class Dataset(grain.sources.RandomAccessDataSource):
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.df = _trusted_data(cfg)
-        self.logger = logging.getLogger("beetle_palooza-ds")
-        self.logger.warning("elytra_width measurements are inaccurate")
+        self.logger = logging.getLogger("beetlepalooza-ds")
+        self.logger.warning("Warning: elytra_width measurements are inaccurate")
 
     def __len__(self) -> int:
         return self.df.height
@@ -154,7 +154,7 @@ class Dataset(grain.sources.RandomAccessDataSource):
         else:
             # Defensive extraction in case the struct shape differs; ensure floats
             scalebar_px = [
-				float(scalebar_struct["x1"]),
+			    float(scalebar_struct["x1"]),
 				float(scalebar_struct["y1"]),
 				float(scalebar_struct["x2"]),
 				float(scalebar_struct["y2"]),
