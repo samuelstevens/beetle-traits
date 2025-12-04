@@ -15,13 +15,13 @@ Proposed solution: Filtering by annotator may collapse this to 2; otherwise pick
 """
 
 import dataclasses
-import pathlib
 import logging
+import pathlib
 
 import beartype
 import grain
-import polars as pl
 import numpy as np
+import polars as pl
 
 from . import utils
 
