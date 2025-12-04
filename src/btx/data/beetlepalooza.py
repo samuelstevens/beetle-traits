@@ -129,6 +129,7 @@ def _trusted_data(cfg: Config) -> pl.DataFrame:
     annotations_filtered = choose_first_per_individual_id.group_by([
         "individual_id",
         "group_img_basename",
+        "group_img_rel_path",
         "beetle_position",
         "indiv_img_rel_path",
         "indiv_img_abs_path",
