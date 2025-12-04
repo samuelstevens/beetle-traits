@@ -60,23 +60,29 @@ class Config:
     hf_root: pathlib.Path = pathlib.Path("./data/beetlepalooza/individual_specimens")
     """Where individual specimen images are stored (individual_specimens directory)."""
 
-    resized_root: pathlib.Path = pathlib.Path("./data/beetlepalooza/group_images_resized")
+    resized_root: pathlib.Path = pathlib.Path(
+        "./data/beetlepalooza/group_images_resized"
+    )
     """Where resized group images are stored."""
 
-    output_dir: pathlib.Path = pathlib.Path("./data/beetlepalooza/template_match_output")
+    output_dir: pathlib.Path = pathlib.Path(
+        "./data/beetlepalooza/template_match_output"
+    )
     """Where to save visualizations and rename logs."""
 
     process_all_images: bool = True
     """Set to True to process all images in metadata, False to use test_group_images list."""
 
-    test_group_images: list[str] = dataclasses.field(default_factory=lambda: [
-        "A00000046183.jpg",
-        "A00000051535.jpg",
-        "A00000041403.jpg",
-        "A00000009160.jpg",
-        "A00000041381.jpg",
-        "A00000051535.jpg",
-    ])
+    test_group_images: list[str] = dataclasses.field(
+        default_factory=lambda: [
+            "A00000046183.jpg",
+            "A00000051535.jpg",
+            "A00000041403.jpg",
+            "A00000009160.jpg",
+            "A00000041381.jpg",
+            "A00000051535.jpg",
+        ]
+    )
     """Only used if process_all_images = False."""
 
     dry_run: bool = True
@@ -752,7 +758,7 @@ def visualize_results(
     # Try to load a font, fallback to default
     try:
         font = ImageFont.truetype("arial.ttf", 40)
-    except:
+    except OSError:
         font = ImageFont.load_default()
 
     # Draw the scale bar first (so it's in the background)
@@ -862,7 +868,10 @@ def visualize_results(
 
 
 def process_single_image(
-    test_group_image: str, measurements_df: pl.DataFrame, metadata_df: pl.DataFrame, cfg: Config
+    test_group_image: str,
+    measurements_df: pl.DataFrame,
+    metadata_df: pl.DataFrame,
+    cfg: Config,
 ) -> list[RenameOperation]:
     """
     Process a single group image.
@@ -948,7 +957,9 @@ def process_single_image(
     )
 
     # Visualize results
-    output_path = cfg.output_dir / f"{test_group_image.replace('.jpg', '_annotated.png')}"
+    output_path = (
+        cfg.output_dir / f"{test_group_image.replace('.jpg', '_annotated.png')}"
+    )
     visualize_results(
         group_image_path,
         position_map,
@@ -1064,7 +1075,9 @@ def main(cfg: Config) -> int:
         print(f"# IMAGE {idx}/{len(images_to_process)}: {test_image}")
         print(f"{'#' * 80}")
         try:
-            rename_ops = process_single_image(test_image, measurements_df, metadata_df, cfg)
+            rename_ops = process_single_image(
+                test_image, measurements_df, metadata_df, cfg
+            )
             all_rename_operations.extend(rename_ops)
             successful_images += 1
         except Exception as e:
@@ -1091,7 +1104,8 @@ def main(cfg: Config) -> int:
     # Create rename log if requested
     if cfg.create_rename_log:
         log_file = (
-            cfg.output_dir / f"rename_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            cfg.output_dir
+            / f"rename_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         )
         cfg.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1132,9 +1146,7 @@ def main(cfg: Config) -> int:
 
     # Update metadata.csv to reflect the renamed files
     if len(completed_ops) > 0:
-        metadata_success, metadata_failed = update_metadata_csv(
-            completed_ops, cfg
-        )
+        metadata_success, metadata_failed = update_metadata_csv(completed_ops, cfg)
         print("\nMetadata update results:")
         print(f"  Updated: {metadata_success}")
         print(f"  Not found in metadata: {metadata_failed}")

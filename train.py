@@ -311,7 +311,7 @@ def train(cfg: Config):
     )
 
     train_cfgs = [
-        dataclasses.replace(cfg.biorepo, split="train"),
+        # dataclasses.replace(cfg.biorepo, split="train"),
         dataclasses.replace(cfg.hawaii, split="train"),
         dataclasses.replace(cfg.beetlepalooza),
     ]

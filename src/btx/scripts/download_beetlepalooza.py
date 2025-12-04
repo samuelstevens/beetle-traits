@@ -10,17 +10,17 @@
 
 import datetime as dt
 import pathlib
+import random
 import sys
+import threading
 import time
 from email.utils import parsedate_to_datetime
 
+import httpcore
+import httpx
 import huggingface_hub as hfhub
 import requests
 import tyro
-import random
-import httpx
-import httpcore
-import threading
 
 # Rate limiter to enforce 1000 requests per 5 minutes across all httpx.Client calls.
 # This monkeypatch wraps httpx.Client.send so all synchronous httpx requests are counted.
@@ -49,7 +49,10 @@ def _rate_limited_send(self, request, *args, **kwargs):
             # compute remaining time in window and wait (release lock while sleeping)
             wait = _rl_window_start + WINDOW_S - now
         sleep = max(wait, 0.0)
-        print(f"[RateLimiter] reached {RATE_LIMIT} requests; sleeping {int(sleep)}s...", file=sys.stderr)
+        print(
+            f"[RateLimiter] reached {RATE_LIMIT} requests; sleeping {int(sleep)}s...",
+            file=sys.stderr,
+        )
         time.sleep(sleep)
     # perform the real send
     return _original_httpx_client_send(self, request, *args, **kwargs)
@@ -109,11 +112,21 @@ def main(
 ):
     # Safely resolve optional HF error classes (avoid AttributeError if not present)
     hf_errors = getattr(hfhub, "errors", None)
-    hf_hub_http_error = getattr(hf_errors, "HfHubHTTPError", None) if hf_errors else None
-    local_entry_exc = getattr(hf_errors, "LocalEntryNotFoundError", None) if hf_errors else None
+    hf_hub_http_error = (
+        getattr(hf_errors, "HfHubHTTPError", None) if hf_errors else None
+    )
+    local_entry_exc = (
+        getattr(hf_errors, "LocalEntryNotFoundError", None) if hf_errors else None
+    )
     # build the exception tuple we'll catch
     # include common timeout/transport exceptions from httpx/httpcore as retryable
-    _base_excs = (requests.HTTPError, httpx.HTTPStatusError, httpx.ReadTimeout, httpx.TransportError, httpcore.ReadTimeout)
+    _base_excs = (
+        requests.HTTPError,
+        httpx.HTTPStatusError,
+        httpx.ReadTimeout,
+        httpx.TransportError,
+        httpcore.ReadTimeout,
+    )
     if hf_hub_http_error is not None:
         _base_excs = _base_excs + (hf_hub_http_error,)
 
@@ -132,7 +145,9 @@ def main(
             return
         except _base_excs as e:
             # try to get underlying response (works for httpx, requests, and wrapped HF errors)
-            resp = getattr(e, "response", None) or getattr(getattr(e, "__cause__", None), "response", None)
+            resp = getattr(e, "response", None) or getattr(
+                getattr(e, "__cause__", None), "response", None
+            )
             status = getattr(resp, "status_code", None)
 
             # If this is a wrapped "local entry not found" from HF (when available), treat as retryable
@@ -161,14 +176,19 @@ def main(
                 # reduce concurrency aggressively on 429 to avoid further rate-limiting
                 if status == 429 and max_workers > 1:
                     max_workers = 1
-                    print("[Info] Reducing max_workers to 1 to avoid further rate limiting.", file=sys.stderr)
+                    print(
+                        "[Info] Reducing max_workers to 1 to avoid further rate limiting.",
+                        file=sys.stderr,
+                    )
                 if max_attempts is not None and attempt >= max_attempts:
                     raise
                 time.sleep(delay)
                 continue
 
             # Handle read/transport timeouts (no HTTP status). Treat as transient and back off.
-            if isinstance(e, (httpx.ReadTimeout, httpcore.ReadTimeout, httpx.TransportError)):
+            if isinstance(
+                e, (httpx.ReadTimeout, httpcore.ReadTimeout, httpx.TransportError)
+            ):
                 backoff_factor = min(2 ** (attempt - 1), 32)
                 # use sleep_s as base when there's no response headers
                 base_delay = _retry_delay_from_headers(None, sleep_s)
@@ -181,7 +201,10 @@ def main(
                 # reduce concurrency to avoid parallel timeouts
                 if max_workers > 1:
                     max_workers = 1
-                    print("[Info] Reducing max_workers to 1 after timeouts.", file=sys.stderr)
+                    print(
+                        "[Info] Reducing max_workers to 1 after timeouts.",
+                        file=sys.stderr,
+                    )
                 if max_attempts is not None and attempt >= max_attempts:
                     raise
                 time.sleep(delay)

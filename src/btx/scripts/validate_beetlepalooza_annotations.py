@@ -5,11 +5,10 @@ This script reads annotations.json and checks if the measurement coordinates
 (elytra_length, elytra_width) fall within the bounds of the individual image.
 """
 
+import dataclasses
 import json
 import logging
 import pathlib
-import dataclasses
-import typing as tp
 
 import beartype
 import numpy as np
@@ -30,10 +29,14 @@ class Config:
     hf_root: pathlib.Path = pathlib.Path("./data/beetlepalooza/individual_specimens")
     """Path to individual specimens directory (to get image dimensions)."""
 
-    resized_root: pathlib.Path = pathlib.Path("./data/beetlepalooza/group_images_resized")
+    resized_root: pathlib.Path = pathlib.Path(
+        "./data/beetlepalooza/group_images_resized"
+    )
     """Path to group images."""
 
-    output_dir: pathlib.Path = pathlib.Path("./data/beetlepalooza-formatted/validation-examples")
+    output_dir: pathlib.Path = pathlib.Path(
+        "./data/beetlepalooza-formatted/validation-examples"
+    )
     """Where to save visualization images."""
 
     visualize_sample_rate: float = 0.1
@@ -242,8 +245,12 @@ def visualize_invalid_measurement(
         # Draw circles at endpoints for invalid measurements
         if not is_valid:
             radius = 10
-            draw.ellipse([x1-radius, y1-radius, x1+radius, y1+radius], fill=(255, 255, 0))
-            draw.ellipse([x2-radius, y2-radius, x2+radius, y2+radius], fill=(255, 255, 0))
+            draw.ellipse(
+                [x1 - radius, y1 - radius, x1 + radius, y1 + radius], fill=(255, 255, 0)
+            )
+            draw.ellipse(
+                [x2 - radius, y2 - radius, x2 + radius, y2 + radius], fill=(255, 255, 0)
+            )
 
     # Resize for easier viewing
     group_w, group_h = group_img.size
@@ -316,11 +323,13 @@ def main(cfg: Config) -> int:
                     logger.info("    - %s", detail)
                 count += 1
                 if count >= 10:
-                    remaining = sum(
-                        1 for r in results if r.measurements_invalid > 0
-                    ) - count
+                    remaining = (
+                        sum(1 for r in results if r.measurements_invalid > 0) - count
+                    )
                     if remaining > 0:
-                        logger.info("  ... and %d more annotations with errors", remaining)
+                        logger.info(
+                            "  ... and %d more annotations with errors", remaining
+                        )
                     break
 
     # Visualize a sample of invalid measurements
@@ -334,8 +343,11 @@ def main(cfg: Config) -> int:
         # Sample 10% (or at least 1 if there are any invalid)
         num_to_visualize = max(1, int(len(invalid_results) * cfg.visualize_sample_rate))
 
-        logger.info("\nVisualizing %d/%d annotations with invalid measurements...",
-                   num_to_visualize, len(invalid_results))
+        logger.info(
+            "\nVisualizing %d/%d annotations with invalid measurements...",
+            num_to_visualize,
+            len(invalid_results),
+        )
 
         # Use numpy for reproducible random sampling
         rng = np.random.default_rng(seed=cfg.seed)
@@ -398,7 +410,9 @@ def main(cfg: Config) -> int:
             valid_measurements = []
 
             # Find the corresponding result to get image dimensions
-            result = next((r for r in results if r.individual_id == individual_id), None)
+            result = next(
+                (r for r in results if r.individual_id == individual_id), None
+            )
             if not result:
                 # Couldn't validate, keep as-is
                 cleaned_annotations.append(annotation)
@@ -441,14 +455,18 @@ def main(cfg: Config) -> int:
                 if cfg.save_invalid_separately:
                     invalid_annotation_info = {
                         "annotation": annotation,
-                        "removed_measurements": len(original_measurements) - len(valid_measurements),
+                        "removed_measurements": len(original_measurements)
+                        - len(valid_measurements),
                     }
                     invalid_annotations_saved.append(invalid_annotation_info)
 
             cleaned_annotations.append(cleaned_annotation)
 
-        logger.info("Removed %d invalid measurements from %d annotations",
-                   total_measurements_removed, annotations_modified)
+        logger.info(
+            "Removed %d invalid measurements from %d annotations",
+            total_measurements_removed,
+            annotations_modified,
+        )
 
         # Save invalid annotations separately if requested
         if cfg.save_invalid_separately and invalid_annotations_saved:
@@ -456,16 +474,21 @@ def main(cfg: Config) -> int:
             invalid_data = [item["annotation"] for item in invalid_annotations_saved]
             with open(invalid_file, "w") as f:
                 json.dump(invalid_data, f, indent=2)
-            logger.info("Saved %d annotations with invalid measurements to %s",
-                       len(invalid_annotations_saved), invalid_file)
+            logger.info(
+                "Saved %d annotations with invalid measurements to %s",
+                len(invalid_annotations_saved),
+                invalid_file,
+            )
 
         # Save cleaned annotations
         logger.info("\nSaving cleaned annotations to %s", cfg.annotations_file)
         with open(cfg.annotations_file, "w") as f:
             json.dump(cleaned_annotations, f, indent=2)
 
-        logger.info("✓ Annotations file updated - %d measurements removed",
-                   total_measurements_removed)
+        logger.info(
+            "✓ Annotations file updated - %d measurements removed",
+            total_measurements_removed,
+        )
 
     return 0
 

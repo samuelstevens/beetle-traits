@@ -13,9 +13,10 @@ USAGE:
 import csv
 import pathlib
 
-
 # CONFIGURATION
-BACKUP_LIST_PATH = pathlib.Path("./test_template_match_output/rename_backup_20250113_123456.csv")
+BACKUP_LIST_PATH = pathlib.Path(
+    "./test_template_match_output/rename_backup_20250113_123456.csv"
+)
 """Path to the backup list CSV file."""
 
 DRY_RUN = True
@@ -36,8 +37,8 @@ def normalize_path(path_str: str, base_dir: pathlib.Path) -> pathlib.Path:
 
     # Check if this is already a full path that starts with base_dir
     # Convert to string and normalize separators for comparison
-    path_str_normalized = str(path_obj).replace('\\', '/')
-    base_str_normalized = str(base_dir).replace('\\', '/')
+    path_str_normalized = str(path_obj).replace("\\", "/")
+    base_str_normalized = str(base_dir).replace("\\", "/")
 
     if base_str_normalized in path_str_normalized:
         # Path already contains base dir, use as-is
@@ -59,21 +60,23 @@ def load_rollback_operations(backup_path: pathlib.Path) -> list[dict]:
 
     operations = []
 
-    with open(backup_path, 'r') as f:
+    with open(backup_path, "r") as f:
         reader = csv.DictReader(f)
         for row in reader:
             operations.append({
-                'group_image': row['group_image'],
-                'from_path': row['rollback_from'],
-                'to_path': row['rollback_to'],
-                'position_before': row['applied_old_position'],
-                'position_after': row['applied_new_position'],
+                "group_image": row["group_image"],
+                "from_path": row["rollback_from"],
+                "to_path": row["rollback_to"],
+                "position_before": row["applied_old_position"],
+                "position_after": row["applied_new_position"],
             })
 
     return operations
 
 
-def apply_rollback(operations: list[dict], base_dir: pathlib.Path, dry_run: bool = True) -> tuple[int, int]:
+def apply_rollback(
+    operations: list[dict], base_dir: pathlib.Path, dry_run: bool = True
+) -> tuple[int, int]:
     """
     Apply rollback operations.
 
@@ -84,21 +87,23 @@ def apply_rollback(operations: list[dict], base_dir: pathlib.Path, dry_run: bool
     failed = 0
 
     for idx, op in enumerate(operations, 1):
-        from_full = normalize_path(op['from_path'], base_dir)
-        to_full = normalize_path(op['to_path'], base_dir)
+        from_full = normalize_path(op["from_path"], base_dir)
+        to_full = normalize_path(op["to_path"], base_dir)
 
-        print(f"\n[{idx}/{len(operations)}] {op['group_image']}: position {op['position_after']} -> {op['position_before']}")
+        print(
+            f"\n[{idx}/{len(operations)}] {op['group_image']}: position {op['position_after']} -> {op['position_before']}"
+        )
 
         if dry_run:
-            print(f"  [DRY RUN] Would rollback:")
+            print("  [DRY RUN] Would rollback:")
             print(f"    FROM: {op['from_path']}")
             print(f"    TO:   {op['to_path']}")
 
             if not from_full.exists():
-                print(f"    ⚠ WARNING: Source file not found!")
+                print("    ⚠ WARNING: Source file not found!")
                 failed += 1
             elif to_full.exists() and from_full != to_full:
-                print(f"    ⚠ WARNING: Target already exists!")
+                print("    ⚠ WARNING: Target already exists!")
                 failed += 1
             else:
                 successful += 1
@@ -109,7 +114,7 @@ def apply_rollback(operations: list[dict], base_dir: pathlib.Path, dry_run: bool
 
                 # Rename the file back
                 from_full.rename(to_full)
-                print(f"  ✓ Rolled back successfully")
+                print("  ✓ Rolled back successfully")
                 successful += 1
             except Exception as e:
                 print(f"  ✗ FAILED: {e}")
@@ -119,12 +124,12 @@ def apply_rollback(operations: list[dict], base_dir: pathlib.Path, dry_run: bool
 
 
 def main():
-    print("="*80)
+    print("=" * 80)
     print("ROLLBACK RENAMES")
-    print("="*80)
+    print("=" * 80)
     print(f"Backup file: {BACKUP_LIST_PATH}")
     print(f"Mode: {'DRY RUN' if DRY_RUN else 'EXECUTE ROLLBACK'}")
-    print("="*80)
+    print("=" * 80)
 
     # Load operations
     try:
@@ -139,21 +144,23 @@ def main():
     if not DRY_RUN:
         print("\n⚠ WARNING: This will reverse previously applied renames!")
         response = input("Are you sure you want to continue? (yes/no): ")
-        if response.lower() not in ['yes', 'y']:
+        if response.lower() not in ["yes", "y"]:
             print("Aborted.")
             return 0
 
     # Apply rollback
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("ROLLING BACK")
-    print("="*80)
+    print("=" * 80)
 
-    successful, failed = apply_rollback(operations, INDIVIDUAL_IMAGES_DIR, dry_run=DRY_RUN)
+    successful, failed = apply_rollback(
+        operations, INDIVIDUAL_IMAGES_DIR, dry_run=DRY_RUN
+    )
 
     # Summary
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("SUMMARY")
-    print("="*80)
+    print("=" * 80)
     print(f"Total operations: {len(operations)}")
     print(f"Successful: {successful}")
     print(f"Failed: {failed}")

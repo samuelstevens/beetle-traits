@@ -54,7 +54,8 @@ import gc
 import json
 import logging
 import pathlib
-#import resource
+
+# import resource
 import subprocess
 import sys
 import time
@@ -80,7 +81,9 @@ class Config:
     hf_root: pathlib.Path = pathlib.Path("./data/beetlepalooza/individual_specimens")
     """Where you dumped data when using download_beetlepalooza.py."""
 
-    resized_root: pathlib.Path = pathlib.Path("./data/beetlepalooza/group_images_resized")
+    resized_root: pathlib.Path = pathlib.Path(
+        "./data/beetlepalooza/group_images_resized"
+    )
     """I don't know why the huggingface dataset doesn't have the right images. I don't make the rules. I just have to play by them."""
 
     log_to: pathlib.Path = pathlib.Path("./logs")
@@ -379,18 +382,20 @@ def get_memory_info() -> dict[str, float]:
         mem_free_gb = meminfo.get("MemFree", 0) / (1024 * 1024)
 
         # Also get process-specific memory
-        #usage = resource.getrusage(resource.RUSAGE_SELF)
-        #process_mem_gb = usage.ru_maxrss / (1024 * 1024)  # Linux reports in KB
+        # usage = resource.getrusage(resource.RUSAGE_SELF)
+        # process_mem_gb = usage.ru_maxrss / (1024 * 1024)  # Linux reports in KB
 
         return {
             "total_gb": round(mem_total_gb, 2),
             "available_gb": round(mem_available_gb, 2),
             "free_gb": round(mem_free_gb, 2),
             "used_gb": round(mem_total_gb - mem_available_gb, 2),
-            #"process_gb": round(process_mem_gb, 2),
+            # "process_gb": round(process_mem_gb, 2),
             "percent_used": round(
                 (mem_total_gb - mem_available_gb) / mem_total_gb * 100, 1
-            ) if mem_total_gb > 0 else 0.0,
+            )
+            if mem_total_gb > 0
+            else 0.0,
         }
     except Exception:
         # Return placeholder values on Windows or if /proc/meminfo is unavailable
@@ -503,7 +508,7 @@ def worker_fn(
             # Strip "individual_specimens/" prefix if present since hf_root already points there
             clean_rel_path = indiv_img_rel_path
             if indiv_img_rel_path.startswith("individual_specimens/"):
-                clean_rel_path = indiv_img_rel_path[len("individual_specimens/"):]
+                clean_rel_path = indiv_img_rel_path[len("individual_specimens/") :]
             indiv_img_abs_path = cfg.hf_root / clean_rel_path
 
             # Load the individual image (grayscale for matching)
@@ -672,7 +677,9 @@ def load_specimens_df(cfg: Config) -> pl.DataFrame:
     # Try different possible locations for the metadata file
     possible_paths = [
         cfg.hf_root / "metadata.csv",  # Direct metadata in hf_root
-        cfg.hf_root / "Separate_segmented_train_test_splits_80_20" / "metadata.csv",  # Split metadata
+        cfg.hf_root
+        / "Separate_segmented_train_test_splits_80_20"
+        / "metadata.csv",  # Split metadata
         cfg.hf_root.parent / "individual_specimens.csv",  # Old format at parent level
     ]
 
@@ -759,7 +766,7 @@ def validate_data(
             # since hf_root already points to that directory
             clean_path = rel_path
             if rel_path.startswith("individual_specimens/"):
-                clean_path = rel_path[len("individual_specimens/"):]
+                clean_path = rel_path[len("individual_specimens/") :]
             full_path = cfg.hf_root / clean_path
 
         if not full_path.exists():
@@ -820,7 +827,9 @@ def validate_data(
                     # Strip "individual_specimens/" prefix if present
                     clean_individual_path = individual_rel_path
                     if individual_rel_path.startswith("individual_specimens/"):
-                        clean_individual_path = individual_rel_path[len("individual_specimens/"):]
+                        clean_individual_path = individual_rel_path[
+                            len("individual_specimens/") :
+                        ]
                     individual_path = cfg.hf_root / clean_individual_path
 
                     # Skip if file doesn't exist (already reported)
@@ -1043,7 +1052,6 @@ def save_annotations(
             dist_cm = row.get("dist_cm", None)
             user_name = row.get("user_name", "")
 
-
             if structure and coords and "x1" in coords:
                 # Adjust coordinates relative to individual image
                 origin_x, origin_y = annotation.indiv_offset_px
@@ -1055,12 +1063,10 @@ def save_annotations(
                 }
 
                 measurements.append({
-                    "measurement_type": structure.lower().replace(
-                        "elytra", "elytra_"
-                    ),
+                    "measurement_type": structure.lower().replace("elytra", "elytra_"),
                     "coords_px": adjusted_coords,
                     "dist_cm": dist_cm,
-                    "annotator": user_name
+                    "annotator": user_name,
                 })
 
         ann_dict["measurements"] = measurements
@@ -1094,20 +1100,25 @@ def run_position_correction(cfg: Config, logger: logging.Logger) -> bool:
         return False
 
     logger.info("Running row_template_match_rename.py...")
-    logger.info("This will correct mislabeled beetle positions based on spatial layout.")
+    logger.info(
+        "This will correct mislabeled beetle positions based on spatial layout."
+    )
     logger.info("Output from position correction script:")
     logger.info("-" * 60)
 
     try:
         # Run the script with real-time output streaming
         # Pass config parameters to the script
-        result = subprocess.run(
+        subprocess.run(
             [
                 sys.executable,
                 str(script_path),
-                "--hf-root", str(cfg.hf_root),
-                "--resized-root", str(cfg.resized_root),
-                "--output-dir", str(cfg.dump_to / "position_correction_output"),
+                "--hf-root",
+                str(cfg.hf_root),
+                "--resized-root",
+                str(cfg.resized_root),
+                "--output-dir",
+                str(cfg.dump_to / "position_correction_output"),
                 "--no-dry-run",  # Actually perform the renames
                 "--process-all-images",  # Process all images
             ],
@@ -1142,10 +1153,14 @@ def run_validation_cleanup(cfg: Config, logger: logging.Logger) -> bool:
     logger.info("STEP 3: VALIDATING AND CLEANING ANNOTATIONS")
     logger.info("=" * 60)
 
-    script_path = pathlib.Path(__file__).parent / "validate_beetlepalooza_annotations.py"
+    script_path = (
+        pathlib.Path(__file__).parent / "validate_beetlepalooza_annotations.py"
+    )
 
     if not script_path.exists():
-        logger.error("validate_beetlepalooza_annotations.py not found at %s", script_path)
+        logger.error(
+            "validate_beetlepalooza_annotations.py not found at %s", script_path
+        )
         return False
 
     annotations_file = cfg.dump_to / "annotations.json"
@@ -1154,7 +1169,9 @@ def run_validation_cleanup(cfg: Config, logger: logging.Logger) -> bool:
         return False
 
     logger.info("Running validation and cleanup...")
-    logger.info("This will remove measurements that fall outside individual beetle bounding boxes.")
+    logger.info(
+        "This will remove measurements that fall outside individual beetle bounding boxes."
+    )
     logger.info("Output from validation script:")
     logger.info("-" * 60)
 
@@ -1162,14 +1179,18 @@ def run_validation_cleanup(cfg: Config, logger: logging.Logger) -> bool:
         # Run the script with real-time output streaming
         # Note: For tyro, boolean flags are passed without values
         # --delete-invalid sets it to True, --no-delete-invalid sets to False
-        result = subprocess.run(
+        subprocess.run(
             [
                 sys.executable,
                 str(script_path),
-                "--annotations-file", str(annotations_file),
-                "--hf-root", str(cfg.hf_root),
-                "--resized-root", str(cfg.resized_root),
-                "--output-dir", str(cfg.dump_to / "validation-examples"),
+                "--annotations-file",
+                str(annotations_file),
+                "--hf-root",
+                str(cfg.hf_root),
+                "--resized-root",
+                str(cfg.resized_root),
+                "--output-dir",
+                str(cfg.dump_to / "validation-examples"),
                 "--delete-invalid",  # This sets delete_invalid=True
                 "--save-invalid-separately",  # This sets save_invalid_separately=True
             ],
@@ -1203,7 +1224,9 @@ def main(cfg: Config) -> int:
         logger.info("PREPROCESSING: BEETLE POSITION CORRECTION")
         logger.info("=" * 80)
         if not run_position_correction(cfg, logger):
-            logger.warning("Position correction failed, but continuing with formatting...")
+            logger.warning(
+                "Position correction failed, but continuing with formatting..."
+            )
         logger.info("")  # Blank line for readability
 
     logger.info("\n" + "=" * 80)
@@ -1310,8 +1333,13 @@ def main(cfg: Config) -> int:
     logger.info("=" * 80)
     logger.info("Annotations saved to: %s", cfg.dump_to / "annotations.json")
     if cfg.run_validation_cleanup:
-        logger.info("Validation results saved to: %s", cfg.dump_to / "validation_results.json")
-        logger.info("Invalid annotations backup saved to: %s", cfg.dump_to / "invalid_annotations.json")
+        logger.info(
+            "Validation results saved to: %s", cfg.dump_to / "validation_results.json"
+        )
+        logger.info(
+            "Invalid annotations backup saved to: %s",
+            cfg.dump_to / "invalid_annotations.json",
+        )
 
     return 0
 
