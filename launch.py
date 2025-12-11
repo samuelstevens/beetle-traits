@@ -14,7 +14,7 @@ def main(cfg: train.Config):
             partition=cfg.slurm_partition,
             gpus_per_node=1,
             ntasks_per_node=1,
-            cpus_per_task=cfg.data.n_workers + 4,
+            cpus_per_task=cfg.n_workers + 4,
             stderr_to_stdout=True,
             account=cfg.slurm_acct,
         )

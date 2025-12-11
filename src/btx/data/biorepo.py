@@ -10,6 +10,8 @@ from . import utils
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
 class Config(utils.Config):
+    go: bool = True
+    """Whether to include this dataset in training."""
     split: tp.Literal["train", "val"] = "train"
     """Which split."""
     # Split-related configuration.

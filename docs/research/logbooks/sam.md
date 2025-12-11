@@ -229,3 +229,19 @@ Next steps:
 1. [sam] Show Nathan how to train on the Hawaii dataset.
 2. [someone] Write a dataloader for beetlepalooza data
 3. [sam] Bring Hanane back into it?
+
+# 12/11/2025
+
+What do I want Nathan to work on?
+
+1. Show that including BeetlePalooza data doesn't hurt validation loss on Hawaii (even if it doesn't help).
+2. Implement the Gaussian heatmap MSE
+3. EoMT
+4. Report scores on BioRepo dataset.
+
+Nathan needs to know what a good report looks like.
+How should you structure an experimental report to be convincing?
+How do we (do our best to) avoid convincing ourselves of something not true?
+
+BeetlePalooza vs Hawaii is a good test bed for this.
+So I need to describe the problem precisely.

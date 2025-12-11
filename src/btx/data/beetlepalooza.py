@@ -31,6 +31,8 @@ logger = logging.getLogger("beetlepalooza")
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
 class Config(utils.Config):
+    go: bool = True
+    """Whether to include this dataset in training."""
     hf_root: pathlib.Path = pathlib.Path("data/beetlepalooza")
     """Path to the dataset root downloaded from HuggingFace."""
     annotations: pathlib.Path = pathlib.Path(

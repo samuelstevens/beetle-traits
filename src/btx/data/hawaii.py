@@ -74,6 +74,8 @@ logger = logging.getLogger("hawaii")
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
 class Config(utils.Config):
+    go: bool = True
+    """Whether to include this dataset in training."""
     hf_root: pathlib.Path = pathlib.Path("data/hawaii")
     """Path to the dataset root downloaded from HuggingFace."""
     annotations: pathlib.Path = pathlib.Path("data/hawaii-formatted/annotations.json")

@@ -311,10 +311,10 @@ def train(cfg: Config):
     )
 
     train_cfgs = [
-        # dataclasses.replace(cfg.biorepo, split="train"),
         dataclasses.replace(cfg.hawaii, split="train"),
-        dataclasses.replace(cfg.beetlepalooza),
+        cfg.beetlepalooza,
     ]
+    train_cfgs = [c for c in train_cfgs if c.go]
     train_dl = make_dataset(
         train_cfgs,
         seed=cfg.seed,
