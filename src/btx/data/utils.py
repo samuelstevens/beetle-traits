@@ -24,6 +24,8 @@ class Sample(tp.TypedDict):
     """{width, length} x two points x {x, y}."""
     scalebar_px: Float[np.ndarray, "2 2"]
     """two points x {x, y}."""
+    loss_mask: Float[np.ndarray, "2"]
+    """Mask for {width, length} indicating which measurements to train on. 1.0 = train, 0.0 = skip."""
 
     # Metadata
     beetle_id: str
