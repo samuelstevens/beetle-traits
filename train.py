@@ -139,10 +139,17 @@ class Aux(eqx.Module):
 @eqx.filter_jit()
 @jaxtyped(typechecker=beartype.beartype)
 def loss_and_aux(
-    model: eqx.Module, batch: dict[str, Array]
+    diff_model: eqx.Module, static_model: eqx.Module, batch: dict[str, Array]
 ) -> tuple[Float[Array, ""], Aux]:
+    model = eqx.combine(diff_model, static_model)
     preds = jax.vmap(model)(batch["img"])
-    mse = jnp.mean((preds - batch["tgt"]) ** 2)
+
+    # Apply loss mask to exclude certain measurements (e.g., BeetlePalooza width)
+    squared_error = (preds - batch["tgt"]) ** 2
+    mask = batch["loss_mask"][:, :, None, None]  # Reshape to [batch, 2 lines, 1, 1]
+    masked_error = squared_error * mask
+    # Each mask element covers 2 points × 2 coords = 4 values
+    mse = jnp.sum(masked_error) / (jnp.sum(mask) * 4 + 1e-8)
 
     # Metrics
     # Pixels
@@ -183,10 +190,19 @@ def step_model(
     state: tp.Any,
     batch: dict[str, Array],
 ) -> tuple[eqx.Module, tp.Any, Aux]:
-    loss_fn = eqx.filter_value_and_grad(loss_and_aux, has_aux=True)
-    (loss, aux), grads = loss_fn(model, batch)
+    #freeze the Vit
+    filter_spec = jax.tree_util.tree_map(eqx.is_inexact_array, model)
+    filter_spec = eqx.tree_at(
+        where=lambda tree: tree.vit,
+        pytree=filter_spec,
+        replace_fn=lambda obj: jax.tree_util.tree_map(lambda _: False, obj)
+    )
+    diff_model, static_model = eqx.partition(model, filter_spec)
 
-    updates, new_state = optim.update(grads, state, model)
+    loss_fn = eqx.filter_value_and_grad(loss_and_aux, has_aux=True)
+    (loss, aux), grads = loss_fn(diff_model, static_model, batch)
+
+    updates, new_state = optim.update(grads, state, diff_model)
     model = eqx.apply_updates(model, updates)
 
     return model, new_state, aux

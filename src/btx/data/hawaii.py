@@ -281,6 +281,7 @@ class Dataset(grain.sources.RandomAccessDataSource):
             img_fpath=str(fpath),
             points_px=np.array(elytra_width_px + elytra_length_px).reshape(2, 2, 2),
             scalebar_px=np.array(scalebar_px).reshape(2, 2),
+            loss_mask=np.array([1.0, 1.0]),  # Train on both width and length
             beetle_id=row["individual_id"],
             beetle_position=row["beetle_position"],
             group_img_basename=row["group_img_basename"],
