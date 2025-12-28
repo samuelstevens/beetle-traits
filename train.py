@@ -189,14 +189,8 @@ def step_model(
     optim: optax.GradientTransformation,
     state: tp.Any,
     batch: dict[str, Array],
+    filter_spec: tp.Any
 ) -> tuple[eqx.Module, tp.Any, Aux]:
-    #freeze the Vit
-    filter_spec = jax.tree_util.tree_map(eqx.is_inexact_array, model)
-    filter_spec = eqx.tree_at(
-        where=lambda tree: tree.vit,
-        pytree=filter_spec,
-        replace_fn=lambda obj: jax.tree_util.tree_map(lambda _: False, obj)
-    )
     diff_model, static_model = eqx.partition(model, filter_spec)
 
     loss_fn = eqx.filter_value_and_grad(loss_and_aux, has_aux=True)
@@ -342,8 +336,17 @@ def train(cfg: Config):
 
     model = btx.modeling.make(cfg.model, key)
 
+     #freeze the Vit
+    filter_spec = jax.tree_util.tree_map(eqx.is_inexact_array, model)
+    filter_spec = eqx.tree_at(
+        where=lambda tree: tree.vit,
+        pytree=filter_spec,
+        replace_fn=lambda obj: jax.tree_util.tree_map(lambda _: False, obj)
+    )
+    diff_model, static_model = eqx.partition(model, filter_spec)
+
     optim = optax.adamw(learning_rate=cfg.learning_rate)
-    state = optim.init(eqx.filter(model, eqx.is_inexact_array))
+    state = optim.init(eqx.filter(diff_model, eqx.is_inexact_array))
 
     run = wandb.init(
         project=cfg.wandb_project, config=dataclasses.asdict(cfg), tags=cfg.tags
@@ -352,7 +355,7 @@ def train(cfg: Config):
     # Training
     for step, batch in enumerate(train_dl):
         batch, metadata = to_device(batch)
-        model, state, aux = step_model(model, optim, state, batch)
+        model, state, aux = step_model(model, optim, state, batch, filter_spec)
 
         if step % cfg.save_every == 0:
             beetle_id, img = plot_preds(batch, metadata, aux.preds)
