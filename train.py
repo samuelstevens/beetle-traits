@@ -260,11 +260,12 @@ def plot_preds(
 
 
 @beartype.beartype
-def validate(cfg: Config, model: eqx.Module, val_dl):
+def validate(cfg: Config, model: eqx.Module, val_dl, filter_spec: tp.Any):
     metrics = []
     for batch in val_dl:
         batch, metadata = to_device(batch)
-        loss, aux = loss_and_aux(model, batch)
+        diff_model, static_model = eqx.partition(model, filter_spec)
+        loss, aux = loss_and_aux(diff_model, static_model, batch)
         metrics.append(aux.metrics())
 
     metrics = {
@@ -346,7 +347,7 @@ def train(cfg: Config):
     diff_model, static_model = eqx.partition(model, filter_spec)
 
     optim = optax.adamw(learning_rate=cfg.learning_rate)
-    state = optim.init(eqx.filter(diff_model, eqx.is_inexact_array))
+    state = optim.init(diff_model)
 
     run = wandb.init(
         project=cfg.wandb_project, config=dataclasses.asdict(cfg), tags=cfg.tags
@@ -373,7 +374,7 @@ def train(cfg: Config):
             logger.info("Step: %d %s", step, metrics)
 
         if step % cfg.val_every == 0:
-            metrics = validate(cfg, model, val_dl)
+            metrics = validate(cfg, model, val_dl, filter_spec)
             run.log(metrics, step=step)
             logger.info("Validation: %d %s", step, metrics)
 
