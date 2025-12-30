@@ -12,12 +12,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+import wandb
 from jaxtyping import Array, Float, jaxtyped
 from PIL import Image, ImageDraw
 
 import btx.data
 import btx.modeling
-import wandb
 
 log_format = "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
 logging.basicConfig(level=logging.INFO, format=log_format)
@@ -104,7 +104,7 @@ def make_dataset(
     mixed = mixed.batch(batch_size=batch_size, drop_remainder=False)
 
     iter_ds = mixed.to_iter_dataset(
-        read_options=grain.ReadOptions(num_threads=2, prefetch_buffer_size=64)
+        read_options=grain.ReadOptions(num_threads=2, prefetch_buffer_size=4)
     )
 
     if n_workers > 0:
@@ -189,7 +189,7 @@ def step_model(
     optim: optax.GradientTransformation,
     state: tp.Any,
     batch: dict[str, Array],
-    filter_spec: tp.Any
+    filter_spec: tp.Any,
 ) -> tuple[eqx.Module, tp.Any, Aux]:
     diff_model, static_model = eqx.partition(model, filter_spec)
 
@@ -337,12 +337,12 @@ def train(cfg: Config):
 
     model = btx.modeling.make(cfg.model, key)
 
-     #freeze the Vit
+    # freeze the Vit
     filter_spec = jax.tree_util.tree_map(eqx.is_inexact_array, model)
     filter_spec = eqx.tree_at(
         where=lambda tree: tree.vit,
         pytree=filter_spec,
-        replace_fn=lambda obj: jax.tree_util.tree_map(lambda _: False, obj)
+        replace_fn=lambda obj: jax.tree_util.tree_map(lambda _: False, obj),
     )
     diff_model, static_model = eqx.partition(model, filter_spec)
 
