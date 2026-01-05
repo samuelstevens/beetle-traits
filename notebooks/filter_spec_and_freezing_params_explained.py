@@ -13,6 +13,7 @@ def _():
     import optax
     import jax.numpy as jnp
     import jax.tree_util as jtu
+    from jaxtyping import PyTree
     return eqx, jax, jnn, jnp, mo, optax
 
 
@@ -74,7 +75,7 @@ def _(eqx, jax, mo, model):
     filter_spec = eqx.tree_at(
         where=lambda tree: tree.head, # if a leaf is part of the head, make it trainable by setting it equal to true
         pytree=filter_spec,
-        replace_fn=lambda obj: jax.tree_util.tree_map(lambda _: True, obj),
+        replace_fn=lambda obj: jax.tree_util.tree_map(eqx.is_array, obj),
     )
     mo.md("**Step 1:** Creates a pytree with the same shape as the model, with each leaf set to false. Set only the trainable leaves to true. In this case, we set the leaves from the head to true.")
     return (filter_spec,)
