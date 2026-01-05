@@ -149,7 +149,7 @@ def loss_and_aux(
     mask = einops.rearrange(batch['loss_mask'], "b l -> b l () ()")
     masked_error = squared_error * mask
     # Each mask element covers 2 points × 2 coords = 4 values
-    active_lines = (jnp.sum(mask) * 4) # each element of mask contributes 4 coordinates of either elyta_width or elytra_length
+    active_lines = jnp.sum(mask) * 4 # each element of mask contributes 4 coordinates of either elyta_width or elytra_length
     mse = jnp.sum(masked_error) / active_lines
 
     # Metrics
