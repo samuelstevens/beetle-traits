@@ -13,7 +13,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import wandb
-from jaxtyping import Array, Float, jaxtyped
+from jaxtyping import Array, Float, jaxtyped, PyTree
 from PIL import Image, ImageDraw
 
 import btx.data
@@ -146,10 +146,11 @@ def loss_and_aux(
 
     # Apply loss mask to exclude certain measurements (e.g., BeetlePalooza width)
     squared_error = (preds - batch["tgt"]) ** 2
-    mask = batch["loss_mask"][:, :, None, None]  # Reshape to [batch, 2 lines, 1, 1]
+    mask = einops.rearrange(batch['loss_mask'], "b l -> b l () ()")
     masked_error = squared_error * mask
     # Each mask element covers 2 points × 2 coords = 4 values
-    mse = jnp.sum(masked_error) / (jnp.sum(mask) * 4 + 1e-8)
+    active_lines = (jnp.sum(mask) * 4) # each element of mask contributes 4 coordinates of either elyta_width or elytra_length
+    mse = jnp.sum(masked_error) / active_lines
 
     # Metrics
     # Pixels
@@ -189,7 +190,7 @@ def step_model(
     optim: optax.GradientTransformation,
     state: tp.Any,
     batch: dict[str, Array],
-    filter_spec: tp.Any,
+    filter_spec: PyTree[bool],
 ) -> tuple[eqx.Module, tp.Any, Aux]:
     diff_model, static_model = eqx.partition(model, filter_spec)
 
@@ -260,7 +261,7 @@ def plot_preds(
 
 
 @beartype.beartype
-def validate(cfg: Config, model: eqx.Module, val_dl, filter_spec: tp.Any):
+def validate(cfg: Config, model: eqx.Module, val_dl, filter_spec: PyTree[bool]):
     metrics = []
     for batch in val_dl:
         batch, metadata = to_device(batch)
@@ -338,11 +339,15 @@ def train(cfg: Config):
     model = btx.modeling.make(cfg.model, key)
 
     # freeze the Vit
-    filter_spec = jax.tree_util.tree_map(eqx.is_inexact_array, model)
+
+    # Step 1 create the filter_specification
+    filter_spec = jax.tree_util.tree_map(
+        lambda _: False, model
+    )  # creates a pytree with the same shape as model setting each leaf to false
     filter_spec = eqx.tree_at(
-        where=lambda tree: tree.vit,
+        where=lambda tree: tree.head,  # if a leaf is part of the head, make it trainable
         pytree=filter_spec,
-        replace_fn=lambda obj: jax.tree_util.tree_map(lambda _: False, obj),
+        replace_fn=lambda obj: jax.tree_util.tree_map(eqx.is_array, obj),
     )
     diff_model, static_model = eqx.partition(model, filter_spec)
 
