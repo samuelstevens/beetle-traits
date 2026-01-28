@@ -35,6 +35,9 @@ build-backend = "hatchling.build"
 select = ["E", "F", "I"]
 ignore = ["F722", "E402", "E501"]
 
+[tool.ruff]
+exclude = ["tests/sweeps/invalid_syntax.py"]
+
 [tool.uv]
 package = true
 
