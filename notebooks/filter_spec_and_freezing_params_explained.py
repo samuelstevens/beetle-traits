@@ -6,14 +6,13 @@ app = marimo.App(width="medium")
 
 @app.cell
 def _():
-    import marimo as mo
-    import jax
     import equinox as eqx
+    import jax
     import jax.nn as jnn
-    import optax
     import jax.numpy as jnp
-    import jax.tree_util as jtu
-    from jaxtyping import PyTree
+    import marimo as mo
+    import optax
+
     return eqx, jax, jnn, jnp, mo, optax
 
 
@@ -54,30 +53,37 @@ def _(eqx, jax, jnn, mo):
                 key=k1,
             )
             self.head = eqx.nn.Linear(
-                in_features=hidden_size,
-                out_features=out_size,
-                key=k2
+                in_features=hidden_size, out_features=out_size, key=k2
             )
+
         def __call__(self, x):
             features = self.backbone(x)
             return self.head(features)
 
     key = jax.random.PRNGKey(0)
     model = Model(2, 4, 2, key)
-    mo.md("**first set up the model:** in this case the backbone is a MLP with a linear head")
+    mo.md(
+        "**first set up the model:** in this case the backbone is a MLP with a linear head"
+    )
     return (model,)
 
 
 @app.cell
 def _(eqx, jax, mo, model):
     # Step 1 create the filter_specification
-    filter_spec = jax.tree_util.tree_map(lambda _: False, model) # creates a pytree with the same shape as model setting each leaf to false
+    filter_spec = jax.tree_util.tree_map(
+        lambda _: False, model
+    )  # creates a pytree with the same shape as model setting each leaf to false
     filter_spec = eqx.tree_at(
-        where=lambda tree: tree.head, # if a leaf is part of the head, make it trainable by setting it equal to true
+        where=lambda tree: (
+            tree.head
+        ),  # if a leaf is part of the head, make it trainable by setting it equal to true
         pytree=filter_spec,
-        replace_fn=lambda obj: jax.tree_util.tree_map(eqx.is_array, obj),
+        replace=jax.tree_util.tree_map(eqx.is_array, model.head),
     )
-    mo.md("**Step 1:** Creates a pytree with the same shape as the model, with each leaf set to false. Set only the trainable leaves to true. In this case, we set the leaves from the head to true.")
+    mo.md(
+        "**Step 1:** Creates a pytree with the same shape as the model, with each leaf set to false. Set only the trainable leaves to true. In this case, we set the leaves from the head to true."
+    )
     return (filter_spec,)
 
 
@@ -86,8 +92,8 @@ def _(jax, mo):
     # Now to generate data
     def get_data(dataset_size, key):
         k_x, k_y = jax.random.split(key)
-        x = jax.random.normal(k_x, (dataset_size, 2)) # input data
-        y = jax.random.normal(k_y, (dataset_size, 2)) # output data
+        x = jax.random.normal(k_x, (dataset_size, 2))  # input data
+        y = jax.random.normal(k_y, (dataset_size, 2))  # output data
         return x, y
 
     # Generate a small batch
@@ -100,7 +106,7 @@ def _(jax, mo):
 
 @app.cell
 def _(eqx, jax, jnp, mo):
-    #Standard mse
+    # Standard mse
     def loss_fn(diff_model, static_model, x, y):
         model = eqx.combine(diff_model, static_model)
         preds = jax.vmap(model)(x)
@@ -108,7 +114,6 @@ def _(eqx, jax, jnp, mo):
 
     @eqx.filter_jit
     def step_model(model, x, y, optim, state, filter_spec):
-
         # Step 2, partition the model using the filters_spec
         diff_model, static_model = eqx.partition(model, filter_spec)
 
@@ -121,6 +126,7 @@ def _(eqx, jax, jnp, mo):
         # recombine the models
         model = eqx.combine(diff_model, static_model)
         return model, state, loss
+
     mo.md("""
     **Step 2: Partition the model** \n
     The leaves which are true based on the filter_spec are included in diff_model (head) and the leaves which are false are in the static_model
@@ -143,7 +149,9 @@ def _(eqx, filter_spec, mo, model, optax, step_model, x_data, y_data):
     old_backbone_weights = model.backbone.layers[0].weight
     old_head_weights = model.head.weight
 
-    new_model, opt_state, loss = step_model(model, x_data, y_data, optim, opt_state, filter_spec)
+    new_model, opt_state, loss = step_model(
+        model, x_data, y_data, optim, opt_state, filter_spec
+    )
 
     new_backbone_weights = new_model.backbone.layers[0].weight
     new_head_weights = new_model.head.weight

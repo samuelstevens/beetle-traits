@@ -127,14 +127,16 @@ def _grouped_split(cfg: Config) -> pl.DataFrame:
     # Species with limited group images go ENTIRELY to validation
     val_group_imgs = set()
     val_group_imgs.update(
-        group_stats.filter(pl.col("n_groups") <= cfg.min_val_groups)
+        group_stats
+        .filter(pl.col("n_groups") <= cfg.min_val_groups)
         .get_column("group_img_basename")
         .to_list()
     )
 
     # For species with more groups, select up to cfg.min_val_groups groups and 10 samples
     for (taxon_id,) in (
-        taxon_group_counts.filter(pl.col("n_groups") > cfg.min_val_groups)
+        taxon_group_counts
+        .filter(pl.col("n_groups") > cfg.min_val_groups)
         .select("taxon_id")
         .iter_rows()
     ):
@@ -146,7 +148,8 @@ def _grouped_split(cfg: Config) -> pl.DataFrame:
         total_beetles = 0
         total_groups = 0
         for group_img, n_beetles in (
-            taxon_groups.select("group_img_basename", "n_beetles")
+            taxon_groups
+            .select("group_img_basename", "n_beetles")
             .sample(fraction=1.0, with_replacement=False, shuffle=True, seed=cfg.seed)
             .iter_rows()
         ):
@@ -199,7 +202,8 @@ def _grouped_split(cfg: Config) -> pl.DataFrame:
 
     # Build split table (each beetle inherits its group's split)
     return df.with_columns(
-        pl.when(pl.col("group_img_basename").is_in(val_group_imgs))
+        pl
+        .when(pl.col("group_img_basename").is_in(val_group_imgs))
         .then(pl.lit("val"))
         .otherwise(pl.lit("train"))
         .alias("split")
@@ -277,11 +281,14 @@ class Dataset(grain.sources.RandomAccessDataSource):
         if self.cfg.include_polylines:
             raise NotImplementedError()
 
+        loss_mask = np.array([1.0, 1.0])  # Train on both width and length
+        msg = f"Expected loss_mask shape (2,), got {loss_mask.shape}"
+        assert loss_mask.shape == (2,), msg
         return utils.Sample(
             img_fpath=str(fpath),
             points_px=np.array(elytra_width_px + elytra_length_px).reshape(2, 2, 2),
             scalebar_px=np.array(scalebar_px).reshape(2, 2),
-            loss_mask=np.array([1.0, 1.0]),  # Train on both width and length
+            loss_mask=loss_mask,
             beetle_id=row["individual_id"],
             beetle_position=row["beetle_position"],
             group_img_basename=row["group_img_basename"],

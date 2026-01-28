@@ -75,9 +75,8 @@ def _trusted_data(cfg: Config) -> pl.DataFrame:
 
     # check if each group of individual_id has 1 elytra_width and 1 elytra_length measurements from trusted sources
     annotations_trusted = (
-        annotations_df_ex.with_columns([
-            pl.col("annotator").is_in(cfg.annotators).alias("is_trusted")
-        ])
+        annotations_df_ex
+        .with_columns([pl.col("annotator").is_in(cfg.annotators).alias("is_trusted")])
         # compute per-group whether there's any trusted annotator
         .with_columns([
             # True if any trusted annotator produced an 'elytra_width' measurement for this individual
@@ -223,11 +222,15 @@ class Dataset(grain.sources.RandomAccessDataSource):
         if self.cfg.include_polylines:
             raise NotImplementedError()
 
+        # Skip width (inaccurate), train on length only
+        loss_mask = np.array([0.0, 1.0])
+        msg = f"Expected loss_mask shape (2,), got {loss_mask.shape}"
+        assert loss_mask.shape == (2,), msg
         return utils.Sample(
             img_fpath=str(fpath),
             points_px=np.array(elytra_width_px + elytra_length_px).reshape(2, 2, 2),
             scalebar_px=np.array(scalebar_px).reshape(2, 2),
-            loss_mask=np.array([0.0, 1.0]),  # Skip width (inaccurate), train on length only
+            loss_mask=loss_mask,
             beetle_id=row["individual_id"],
             beetle_position=row["beetle_position"],
             group_img_basename=row["group_img_basename"],
