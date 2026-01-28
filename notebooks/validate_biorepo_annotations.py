@@ -109,6 +109,9 @@ def _(annotations_by_image, beetle_dropdown, image_dropdown):
 
 @app.cell
 def _(Image, biorepo_dir, mo, np, plt, selected_annotation):
+    if selected_annotation is None:
+        # No annotation selected; skip visualization to avoid errors.
+        return
     # Load images
     group_img_path = biorepo_dir / "Images" / selected_annotation["group_img"]
     individual_img_path = biorepo_dir / selected_annotation["rel_individual_img_path"]

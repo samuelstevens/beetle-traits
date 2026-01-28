@@ -5,7 +5,7 @@ This script:
 1. Template matches individual beetles on group images
 2. Infers correct beetle positions based on spatial layout (top-to-bottom, left-to-right)
 3. Identifies files with incorrect position labels
-4. Renames files to correct position numbers \
+4. Renames files to correct position numbers
 5. Creates visualizations
 
 USAGE:
@@ -403,6 +403,7 @@ def visualize_results(
     logger.info("Saved visualization to: %s", output_path)
 
 
+@beartype.beartype
 def execute_renames(
     rename_ops: list[RenameOperation],
 ) -> tuple[int, int, list[RenameOperation]]:
@@ -680,7 +681,7 @@ def offset_polyline(polyline: list, offset_x: float, offset_y: float) -> list:
 @beartype.beartype
 def create_measurements_annotations(
     cfg: Config, template_match_df: pl.DataFrame, beetle_metadata_df: pl.DataFrame
-):
+) -> list[dict]:
     annotations_path = cfg.toras_anns
     with annotations_path.open("r", encoding="utf-8") as f:
         toras_data = json.load(f)
@@ -993,7 +994,7 @@ def validate_annotations(cfg: Config, annotations: list[dict]) -> list[dict]:
 @beartype.beartype
 def main(cfg: Config) -> tuple[int, pl.DataFrame]:
     logging.basicConfig(level=logging.INFO, format=log_format)
-    logger = logging.getLogger("format-biorepo")
+
 
     logger.info("=" * 80)
     logger.info("BIOREPO BEETLE POSITION INFERENCE AND TEMPLATE MATCHING")
