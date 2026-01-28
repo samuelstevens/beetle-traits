@@ -12,12 +12,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-import wandb
-from jaxtyping import Array, Float, jaxtyped, PyTree
+from jaxtyping import Array, Float, PyTree, jaxtyped
 from PIL import Image, ImageDraw
 
 import btx.data
 import btx.modeling
+import wandb
 
 log_format = "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
 logging.basicConfig(level=logging.INFO, format=log_format)
@@ -104,7 +104,7 @@ def make_dataset(
     mixed = mixed.batch(batch_size=batch_size, drop_remainder=False)
 
     iter_ds = mixed.to_iter_dataset(
-        read_options=grain.ReadOptions(num_threads=2, prefetch_buffer_size=4)
+        read_options=grain.ReadOptions(num_threads=2, prefetch_buffer_size=64)
     )
 
     if n_workers > 0:
@@ -146,11 +146,11 @@ def loss_and_aux(
 
     # Apply loss mask to exclude certain measurements (e.g., BeetlePalooza width)
     squared_error = (preds - batch["tgt"]) ** 2
-    mask = einops.rearrange(batch['loss_mask'], "b l -> b l () ()")
+    mask = einops.rearrange(batch["loss_mask"], "b l -> b l () ()")
     masked_error = squared_error * mask
-    # Each mask element covers 2 points × 2 coords = 4 values
-    active_lines = jnp.sum(mask) * 4 # each element of mask contributes 4 coordinates of either elyta_width or elytra_length
-    mse = jnp.sum(masked_error) / active_lines
+    # Each mask element covers 2 points x 2 coords = 4 values, so active_lines counts unmasked coordinate values.
+    active_lines = jnp.sum(mask) * 4
+    mse = jnp.where(active_lines > 0, jnp.sum(masked_error) / active_lines, 0.0)
 
     # Metrics
     # Pixels
@@ -198,7 +198,8 @@ def step_model(
     (loss, aux), grads = loss_fn(diff_model, static_model, batch)
 
     updates, new_state = optim.update(grads, state, diff_model)
-    model = eqx.apply_updates(model, updates)
+    diff_model = eqx.apply_updates(diff_model, updates)
+    model = eqx.combine(diff_model, static_model)
 
     return model, new_state, aux
 
@@ -341,16 +342,17 @@ def train(cfg: Config):
     # freeze the Vit
 
     # Step 1 create the filter_specification
-    filter_spec = jax.tree_util.tree_map(
-        lambda _: False, model
-    )  # creates a pytree with the same shape as model setting each leaf to false
+    # Create a pytree with the same shape as model setting each leaf to false
+    filter_spec = jax.tree_util.tree_map(lambda _: False, model)
+    # If a leaf is part of the head, make it trainable
     filter_spec = eqx.tree_at(
-        where=lambda tree: tree.head,  # if a leaf is part of the head, make it trainable
-        pytree=filter_spec,
-        replace_fn=lambda obj: jax.tree_util.tree_map(eqx.is_array, obj),
+        lambda tree: tree.head,
+        filter_spec,
+        jax.tree_util.tree_map(eqx.is_array, model.head),
     )
-    diff_model, static_model = eqx.partition(model, filter_spec)
 
+    # Optimize only the differentiable part of the model.
+    diff_model, _ = eqx.partition(model, filter_spec)
     optim = optax.adamw(learning_rate=cfg.learning_rate)
     state = optim.init(diff_model)
 
