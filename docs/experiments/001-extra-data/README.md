@@ -14,7 +14,7 @@ Data and evaluation notes:
 - Current wandb metrics aggregate width and length together. For length-only comparisons, we should compute per-line metrics in a notebook later (see `notebooks/`).
 
 Sweep file:
-- `sweep.py`: six runs (three seeds x two data configurations).
+- `sweep.py`: six runs (three learning rates x two data configurations).
 
 How to run:
 - Update the paths at the top of `sweep.py` (Hawaii/BeetlePalooza roots, annotations, DINOv3 checkpoint).
@@ -30,6 +30,21 @@ uv run launch.py \
   model:frozen
 ```
 
-Outputs to compare:
-- `val/loss`, `val/line_err_cm`, `val/median_line_err_cm`, `val/max_line_err_cm` on Hawaii val.
-- For length-only conclusions, use a notebook to compute line index 1 metrics explicitly.
+## Results
+
+Final validation loss and line errors vs learning rate (color = step, shape = BeetlePalooza inclusion):
+
+![Extra data sweep results](fig1.png)
+
+These plots come directly from `notebook.py` in this folder.
+We load W&B runs tagged `exp-001`, then plot loss and width/length-specific metrics against learning rate and step.
+The y-axis is log-scale for all three to make multiplicative differences easier to see, the point color encodes the training step (to show how far each run progressed), and marker shape indicates whether BeetlePalooza data was included.
+This view is intended to answer whether adding BeetlePalooza shifts the validation curves on Hawaii across learning rates while controlling for partial runs or early failures.
+
+In conclusion, it seems like BeetlePalooza data doesn't help.
+Possible explanations:
+
+- Since we are only evaluating on Hawaii, introducing any data besides Hawaii is a distribution shift.
+- The BeetlePalooza data is simply too noisy.
+- The model doesn't have enough capacity to take advantage of the extra data.
+- The learning rate is not optimal. Both configs seem like they'd benefit from a higher learning rate.

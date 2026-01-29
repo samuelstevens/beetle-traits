@@ -104,7 +104,7 @@ def make_dataset(
     mixed = mixed.batch(batch_size=batch_size, drop_remainder=False)
 
     iter_ds = mixed.to_iter_dataset(
-        read_options=grain.ReadOptions(num_threads=2, prefetch_buffer_size=64)
+        read_options=grain.ReadOptions(num_threads=2, prefetch_buffer_size=8)
     )
 
     if n_workers > 0:
@@ -121,18 +121,46 @@ def make_dataset(
 class Aux(eqx.Module):
     loss: Float[Array, ""]
     preds: Float[Array, "batch 2 2 2"]
+    point_err_raw: Float[Array, " batch points"]
     point_err_px: Float[Array, " batch points"]
     point_err_cm: Float[Array, " batch points"]
+    line_err_raw: Float[Array, " batch lines"]
     line_err_px: Float[Array, " batch lines"]
     line_err_cm: Float[Array, " batch lines"]
+    width_point_err_raw: Float[Array, " batch"]
+    length_point_err_raw: Float[Array, " batch"]
+    width_point_err_px: Float[Array, " batch"]
+    length_point_err_px: Float[Array, " batch"]
+    width_point_err_cm: Float[Array, " batch"]
+    length_point_err_cm: Float[Array, " batch"]
+    width_line_err_raw: Float[Array, " batch"]
+    length_line_err_raw: Float[Array, " batch"]
+    width_line_err_px: Float[Array, " batch"]
+    length_line_err_px: Float[Array, " batch"]
+    width_line_err_cm: Float[Array, " batch"]
+    length_line_err_cm: Float[Array, " batch"]
 
     def metrics(self):
         return {
             "loss": self.loss,
+            "point_err_raw": self.point_err_raw,
             "point_err_px": self.point_err_px,
             "point_err_cm": self.point_err_cm,
+            "line_err_raw": self.line_err_raw,
             "line_err_px": self.line_err_px,
             "line_err_cm": self.line_err_cm,
+            "width_point_err_raw": self.width_point_err_raw,
+            "length_point_err_raw": self.length_point_err_raw,
+            "width_point_err_px": self.width_point_err_px,
+            "length_point_err_px": self.length_point_err_px,
+            "width_point_err_cm": self.width_point_err_cm,
+            "length_point_err_cm": self.length_point_err_cm,
+            "width_line_err_raw": self.width_line_err_raw,
+            "length_line_err_raw": self.length_line_err_raw,
+            "width_line_err_px": self.width_line_err_px,
+            "length_line_err_px": self.length_line_err_px,
+            "width_line_err_cm": self.width_line_err_cm,
+            "length_line_err_cm": self.length_line_err_cm,
         }
 
 
@@ -153,6 +181,12 @@ def loss_and_aux(
     mse = jnp.where(active_lines > 0, jnp.sum(masked_error) / active_lines, 0.0)
 
     # Metrics
+    mask_line = batch["loss_mask"]
+    mask_point = mask_line[:, :, None]
+
+    # Raw space (resized pixels, same space as loss)
+    point_err_raw_line = jnp.linalg.norm(preds - batch["tgt"], axis=-1)
+
     # Pixels
     scale_x, scale_y = jnp.unstack(batch["scale"], axis=-1)
     scale_x = jnp.expand_dims(scale_x, (1, 2))
@@ -165,11 +199,8 @@ def loss_and_aux(
     px_per_cm = jnp.linalg.norm(scalebar_start - scalebar_end, axis=1)
 
     # Point MAE
-    point_err_px = einops.rearrange(
-        jnp.linalg.norm(preds_px - tgts_px, axis=-1),
-        "batch lines points -> batch (lines points)",
-    )
-    point_err_cm = point_err_px / px_per_cm[:, None]
+    point_err_px_line = jnp.linalg.norm(preds_px - tgts_px, axis=-1)
+    point_err_cm_line = point_err_px_line / px_per_cm[:, None, None]
 
     # Line length MAE
     tgts_start_px, tgts_end_px = jnp.unstack(tgts_px, axis=2)
@@ -180,7 +211,67 @@ def loss_and_aux(
     line_err_px = jnp.abs(preds_line_px - tgts_line_px)
     line_err_cm = line_err_px / px_per_cm[:, None]
 
-    return mse, Aux(mse, preds, point_err_px, point_err_cm, line_err_px, line_err_cm)
+    # Line length MAE in raw space
+    tgts_start_raw, tgts_end_raw = jnp.unstack(batch["tgt"], axis=2)
+    tgts_line_raw = jnp.linalg.norm(tgts_start_raw - tgts_end_raw, axis=-1)
+
+    preds_start_raw, preds_end_raw = jnp.unstack(preds, axis=2)
+    preds_line_raw = jnp.linalg.norm(preds_start_raw - preds_end_raw, axis=-1)
+    line_err_raw = jnp.abs(preds_line_raw - tgts_line_raw)
+
+    point_err_raw_line = jnp.where(mask_point > 0, point_err_raw_line, jnp.nan)
+    point_err_px_line = jnp.where(mask_point > 0, point_err_px_line, jnp.nan)
+    point_err_cm_line = jnp.where(mask_point > 0, point_err_cm_line, jnp.nan)
+    line_err_raw = jnp.where(mask_line > 0, line_err_raw, jnp.nan)
+    line_err_px = jnp.where(mask_line > 0, line_err_px, jnp.nan)
+    line_err_cm = jnp.where(mask_line > 0, line_err_cm, jnp.nan)
+
+    point_err_raw = einops.rearrange(
+        point_err_raw_line, "batch lines points -> batch (lines points)"
+    )
+    point_err_px = einops.rearrange(
+        point_err_px_line, "batch lines points -> batch (lines points)"
+    )
+    point_err_cm = einops.rearrange(
+        point_err_cm_line, "batch lines points -> batch (lines points)"
+    )
+
+    width_point_err_raw = jnp.nanmean(point_err_raw_line[:, 0], axis=1)
+    length_point_err_raw = jnp.nanmean(point_err_raw_line[:, 1], axis=1)
+    width_point_err_px = jnp.nanmean(point_err_px_line[:, 0], axis=1)
+    length_point_err_px = jnp.nanmean(point_err_px_line[:, 1], axis=1)
+    width_point_err_cm = jnp.nanmean(point_err_cm_line[:, 0], axis=1)
+    length_point_err_cm = jnp.nanmean(point_err_cm_line[:, 1], axis=1)
+
+    width_line_err_raw = line_err_raw[:, 0]
+    length_line_err_raw = line_err_raw[:, 1]
+    width_line_err_px = line_err_px[:, 0]
+    length_line_err_px = line_err_px[:, 1]
+    width_line_err_cm = line_err_cm[:, 0]
+    length_line_err_cm = line_err_cm[:, 1]
+
+    return mse, Aux(
+        mse,
+        preds,
+        point_err_raw,
+        point_err_px,
+        point_err_cm,
+        line_err_raw,
+        line_err_px,
+        line_err_cm,
+        width_point_err_raw,
+        length_point_err_raw,
+        width_point_err_px,
+        length_point_err_px,
+        width_point_err_cm,
+        length_point_err_cm,
+        width_line_err_raw,
+        length_line_err_raw,
+        width_line_err_px,
+        length_line_err_px,
+        width_line_err_cm,
+        length_line_err_cm,
+    )
 
 
 @eqx.filter_jit()
@@ -274,9 +365,9 @@ def validate(cfg: Config, model: eqx.Module, val_dl, filter_spec: PyTree[bool]):
         k: jnp.concatenate([dct[k].reshape(-1) for dct in metrics]) for k in metrics[0]
     }
 
-    means = {f"val/{k}": v.mean().item() for k, v in metrics.items()}
-    maxes = {f"val/max_{k}": v.max().item() for k, v in metrics.items()}
-    medians = {f"val/median_{k}": jnp.median(v).item() for k, v in metrics.items()}
+    means = {f"val/{k}": jnp.nanmean(v).item() for k, v in metrics.items()}
+    maxes = {f"val/max_{k}": jnp.nanmax(v).item() for k, v in metrics.items()}
+    medians = {f"val/median_{k}": jnp.nanmedian(v).item() for k, v in metrics.items()}
 
     beetle_id, img = plot_preds(batch, metadata, aux.preds)
     return {
@@ -368,7 +459,7 @@ def train(cfg: Config):
         if step % cfg.save_every == 0:
             beetle_id, img = plot_preds(batch, metadata, aux.preds)
             metrics = {
-                f"train/{key}": value.mean().item()
+                f"train/{key}": jnp.nanmean(value).item()
                 for key, value in aux.metrics().items()
             }
             metrics["step"] = step

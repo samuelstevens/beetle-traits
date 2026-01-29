@@ -16,7 +16,7 @@ dependencies = [
     "huggingface-hub>=0.34.4",
     "jax[cuda12]>=0.7.2",
     "jaxtyping>=0.3.2",
-    "marimo>=0.15.2",
+    "marimo[mcp]>=0.19.6",
     "matplotlib>=3.10.7",
     "optax>=0.2.5",
     "pillow>=11.3.0",
@@ -40,6 +40,9 @@ exclude = ["tests/sweeps/invalid_syntax.py"]
 
 [tool.uv]
 package = true
+
+[tool.marimo.runtime]
+watcher_on_save = "autorun"
 
 [dependency-groups]
 dev = [

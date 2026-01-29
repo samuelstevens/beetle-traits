@@ -1,4 +1,4 @@
-"""Six-job sweep: three seeds x two data configurations."""
+"""Six-job sweep: three learning rates x two data configurations."""
 
 import pathlib
 
@@ -15,10 +15,11 @@ DINO_CKPT_FPATH = pathlib.Path(
 
 def make_cfgs() -> list[dict]:
     cfgs = []
-    for seed in [17, 23, 29]:
+    for lr in [1e-4, 3e-4, 1e-3]:
         cfgs.append({
-            "seed": seed,
+            "seed": 17,
             "batch_size": 256,
+            "learning_rate": lr,
             "tags": ["exp-001", "hawaii-only"],
             "model": {"dinov3_ckpt": DINO_CKPT_FPATH},
             "hawaii": {
@@ -34,8 +35,9 @@ def make_cfgs() -> list[dict]:
             },
         })
         cfgs.append({
-            "seed": seed,
+            "seed": 17,
             "batch_size": 256,
+            "learning_rate": lr,
             "tags": ["exp-001", "extra-data"],
             "model": {"dinov3_ckpt": DINO_CKPT_FPATH},
             "hawaii": {

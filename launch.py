@@ -1,6 +1,7 @@
 import logging
 import pathlib
 import sys
+import typing as tp
 
 import beartype
 import submitit
@@ -30,7 +31,10 @@ def _assert_executor_compatible(cfgs: list[train.Config]) -> train.Config:
 
 
 @beartype.beartype
-def main(cfg: train.Config, sweep: pathlib.Path | None = None):
+def main(
+    cfg: tp.Annotated[train.Config, tyro.conf.arg(name="")],
+    sweep: pathlib.Path | None = None,
+):
     log_format = "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
     logging.basicConfig(level=logging.INFO, format=log_format)
 
@@ -55,6 +59,7 @@ def main(cfg: train.Config, sweep: pathlib.Path | None = None):
     if cfg.slurm_acct:
         executor = submitit.SlurmExecutor(folder=cfg.log_to)
         executor.update_parameters(
+            job_name="beetle-pretrain",
             time=int(cfg.n_hours * 60),
             partition=cfg.slurm_partition,
             gpus_per_node=1,
