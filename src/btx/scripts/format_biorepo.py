@@ -1,17 +1,36 @@
 """
-Template matching and position inference for biorepo beetle images.
+Format and validate beetle position annotations from biorepo group images.
 
-This script:
-1. Template matches individual beetles on group images
-2. Infers correct beetle positions based on spatial layout (top-to-bottom, left-to-right)
-3. Identifies files with incorrect position labels
-4. Renames files to correct position numbers
-5. Creates visualizations
+This script processes beetle collections by:
+1. Template matching individual beetles on group images to find their spatial locations
+2. Grouping beetles into rows and inferring correct positions (top-to-bottom, left-to-right)
+3. Renaming individual beetle files to match inferred positions
+4. Creating measurement annotations with taxon info and measurement coordinates
+5. Validating all annotations ensure coordinates stay within image bounds
+6. Generating validation statistics and outputting validated annotations
+
+INPUTS:
+- Group images (PNG): Original images with multiple beetles
+- Individual beetles (PNG): Pre-extracted individual beetle images
+- Beetle metadata (CSV): Scientific names and taxon IDs
+- TORAS annotations (JSON): Manual measurements with coordinates
+
+OUTPUTS:
+- annotations.json: Validated beetle annotations with measurements and metadata
+- validation_stats.json: Statistics on validation results and data quality
 
 USAGE:
 ------
-python -m btx.scripts.format_biorepo 
-python -m btx.scripts.format_biorepo 
+Local execution:
+  python -m btx.scripts.format_biorepo
+
+With Slurm (parallel processing):
+  python -m btx.scripts.format_biorepo --slurm-acct=YOUR_ACCOUNT --slurm-partition=parallel
+
+Custom paths:
+  python -m btx.scripts.format_biorepo --biorepo-dir=./data/biorepo --dump-to=./data/biorepo-formatted
+
+All parameters are configurable via command line (see Config class for available options).
 """
 
 import dataclasses
@@ -20,7 +39,6 @@ import json
 import logging
 import pathlib
 import time
-from typing import NamedTuple
 
 import beartype
 import numpy as np
@@ -102,8 +120,8 @@ class Config:
 
 
 @beartype.beartype
-@dataclasses.dataclass(frozen=True)
-class BeetleMatch(NamedTuple):
+@dataclasses.dataclass
+class BeetleMatch:
     """Result of template matching for one beetle."""
 
     x: float  # Top-left x coordinate
@@ -116,8 +134,8 @@ class BeetleMatch(NamedTuple):
 
 
 @beartype.beartype
-@dataclasses.dataclass(frozen=True)
-class RenameOperation(NamedTuple):
+@dataclasses.dataclass
+class RenameOperation:
     """Information about a file rename operation."""
 
     old_path: pathlib.Path
@@ -165,7 +183,7 @@ def template_match_beetles(
 
             corr = skimage.feature.match_template(group_img, template, pad_input=False)
 
-            if corr.size == 0:
+            if corr.size == 0.0:
                 logger.warning("Empty correlation map for %s", indiv_path.name)
                 continue
 
@@ -733,9 +751,11 @@ def create_measurements_annotations(
                 )
                 taxon_id = None
                 scientific_name = None
+                individual_id = None
             else:
                 taxon_id = metadata_row["taxonID"][0]
                 scientific_name = metadata_row["scientificName"][0]
+                individual_id = metadata_row["individualID"][0]
 
             length_row = image_df.filter(pl.col("Entity") == entity_num)[0]
             width_row = image_df.filter(pl.col("Entity") == entity_num + 1)[0]
@@ -764,7 +784,7 @@ def create_measurements_annotations(
             # Scalebar stays in group image coordinates but convert to paired format [[x1,y1], [x2,y2], ...]
             scalebar_json = {
                 "measurement_type": "scalebar",
-                "polyline": offset_polyline(scalebar_row["polyline"].to_list(), 0, 0),
+                "polyline": offset_polyline(scalebar_row["polyline"].to_list(), 0.0, 0.0),
             }
 
             # Build image paths
@@ -788,20 +808,14 @@ def create_measurements_annotations(
                 "offset_x": offset_x,
                 "offset_y": offset_y,
                 "taxon_id": taxon_id,
+                "individual_id": individual_id,
                 "scientific_name": scientific_name,
                 "measurements": [length_json, width_json, pronotum_json, scalebar_json],
             }
             measurements_per_beetle.append(beetle_annotation_json)
 
-    # Save the JSON to dump_to path
-    cfg.dump_to.mkdir(parents=True, exist_ok=True)
-    output_path = cfg.dump_to / "annotations.json"
-
-    with output_path.open("w", encoding="utf-8") as f:
-        json.dump(measurements_per_beetle, f, indent=2)
-
     logger.info(
-        "Saved %d beetle annotations to %s", len(measurements_per_beetle), output_path
+        "Created %d beetle annotations", len(measurements_per_beetle)
     )
 
     return measurements_per_beetle
@@ -848,6 +862,19 @@ def validate_annotations(cfg: Config, annotations: list[dict]) -> list[dict]:
         stats["images_processed"].add(group_img)
         if ann.get("scientific_name"):
             stats["unique_species"].add(ann["scientific_name"])
+
+        # Check for missing taxon information
+        if ann.get("taxon_id") is None or ann.get("scientific_name") is None:
+            invalid_annotations.append({
+                "group_img": group_img,
+                "beetle_position": beetle_pos,
+                "reason": "missing taxon_id or scientific_name",
+            })
+            stats["invalid_annotations"] += 1
+            stats["invalid_beetles"].append(
+                f"{group_img} beetle {beetle_pos}: missing taxon info"
+            )
+            continue
 
         # Check if individual image exists
         if not individual_path.exists():
@@ -954,13 +981,16 @@ def validate_annotations(cfg: Config, annotations: list[dict]) -> list[dict]:
     )
     stats["num_empty_polylines"] = len(stats["empty_polylines"])
 
+    # Create output directory if it doesn't exist
+    cfg.dump_to.mkdir(parents=True, exist_ok=True)
+
     # Save statistics
     stats_path = cfg.dump_to / "validation_stats.json"
     with stats_path.open("w", encoding="utf-8") as f:
         json.dump(stats, f, indent=2)
     logger.info("Saved validation statistics to %s", stats_path)
 
-    valid_annotations_path = cfg.dump_to / "annotations_validated.json"
+    valid_annotations_path = cfg.dump_to / "annotations.json"
     with valid_annotations_path.open("w", encoding="utf-8") as f:
         json.dump(valid_annotations, f, indent=2)
     logger.info(
@@ -994,7 +1024,6 @@ def validate_annotations(cfg: Config, annotations: list[dict]) -> list[dict]:
 @beartype.beartype
 def main(cfg: Config) -> tuple[int, pl.DataFrame]:
     logging.basicConfig(level=logging.INFO, format=log_format)
-
 
     logger.info("=" * 80)
     logger.info("BIOREPO BEETLE POSITION INFERENCE AND TEMPLATE MATCHING")
