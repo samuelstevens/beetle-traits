@@ -203,15 +203,15 @@ class Dataset(grain.sources.RandomAccessDataSource):
         if elytra_width is None:
             msg = f"Image {row['rel_group_img_path']} beetle {row['beetle_position']} has no elytra width."
             self.logger.error(msg)
-            raise ValueError(msg)
+            
         if elytra_length is None:
             msg = f"Image {row['rel_group_img_path']} beetle {row['beetle_position']} has no elytra length."
             self.logger.error(msg)
-            raise ValueError(msg)
+            
         if scalebar is None:
             msg = f"Image {row['rel_group_img_path']} beetle {row['beetle_position']} has no scalebar."
             self.logger.error(msg)
-            raise ValueError(msg)
+            
 
         loss_mask = np.array([1.0, 1.0])  # Train on both width and length
         msg = f"Expected loss_mask shape (2,), got {loss_mask.shape}"

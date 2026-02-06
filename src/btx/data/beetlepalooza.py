@@ -208,11 +208,9 @@ class Dataset(grain.sources.RandomAccessDataSource):
         if elytra_width_px is None:
             msg = f"Image {row['group_img_rel_path']} beetle {row['beetle_position']} has no elytra width."
             self.logger.error(msg)
-            raise ValueError(msg)
         if elytra_length_px is None:
             msg = f"Image {row['group_img_rel_path']} beetle {row['beetle_position']} has no elytra length."
             self.logger.error(msg)
-            raise ValueError(msg)
 
         if self.cfg.include_polylines:
             raise NotImplementedError()
