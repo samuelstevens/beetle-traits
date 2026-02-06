@@ -135,6 +135,7 @@ def _trusted_data(cfg: Config) -> pl.DataFrame:
         "indiv_img_rel_path",
         "indiv_img_abs_path",
         "scalebar_px",
+        "scientific_name",
     ]).agg(pl.col("measurements"))
     logger.info(
         f"{annotations_filtered.height} annotations remain after enforcing 2 measurements per annotation."
@@ -164,7 +165,7 @@ class Dataset(grain.sources.RandomAccessDataSource):
             row["indiv_img_rel_path"] = "part_001/" + row["indiv_img_rel_path"]
 
         fpath = self.cfg.hf_root / "individual_specimens" / row["indiv_img_rel_path"]
-        assert fpath.is_file()
+        assert fpath.is_file(), f"Image not found: {fpath}"
 
         elytra_width_px = None
         elytra_length_px = None
@@ -205,19 +206,13 @@ class Dataset(grain.sources.RandomAccessDataSource):
                 ]
 
         if elytra_width_px is None:
-            self.logger.error(
-                "Image %s beetle %d has no elytra width.",
-                row["group_img_rel_path"],
-                row["beetle_position"],
-            )
-            elytra_width_px = [0.0, 0.0, 0.0, 0.0]
+            msg = f"Image {row['group_img_rel_path']} beetle {row['beetle_position']} has no elytra width."
+            self.logger.error(msg)
+            raise ValueError(msg)
         if elytra_length_px is None:
-            self.logger.error(
-                "Image %s beetle %d has no elytra length.",
-                row["group_img_rel_path"],
-                row["beetle_position"],
-            )
-            elytra_length_px = [0.0, 0.0, 0.0, 0.0]
+            msg = f"Image {row['group_img_rel_path']} beetle {row['beetle_position']} has no elytra length."
+            self.logger.error(msg)
+            raise ValueError(msg)
 
         if self.cfg.include_polylines:
             raise NotImplementedError()
@@ -234,4 +229,5 @@ class Dataset(grain.sources.RandomAccessDataSource):
             beetle_id=row["individual_id"],
             beetle_position=row["beetle_position"],
             group_img_basename=row["group_img_basename"],
+            scientific_name=row["scientific_name"],
         )

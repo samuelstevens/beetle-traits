@@ -31,6 +31,7 @@ class Sample(tp.TypedDict):
     beetle_id: str
     beetle_position: int
     group_img_basename: str
+    scientific_name: str
 
 
 @beartype.beartype
