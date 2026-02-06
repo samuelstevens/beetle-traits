@@ -3,13 +3,12 @@ import dataclasses
 import logging
 import numpy as np
 import pathlib
+import typing as tp
 import polars as pl
 
 
 import beartype
 import grain
-
-import typing as tp
 from . import utils
 
 logger = logging.getLogger("biorepo")
@@ -19,7 +18,7 @@ logger = logging.getLogger("biorepo")
 @dataclasses.dataclass(frozen=True)
 class Config(utils.Config):
     go: bool = True
-    """Whether to include this dataset in training."""
+    """Whether to include this dataset."""
     hf_root: pathlib.Path = pathlib.Path("data/biorepo")
     """Path to the dataset root"""
     annotations: pathlib.Path = pathlib.Path("data/biorepo-formatted/annotations.json")
@@ -36,7 +35,7 @@ def _grouped_split(cfg: Config) -> pl.DataFrame:
     """
     Group-aware train/val split.
 
-    For each species, try to grab at least two group images and 10 samples per species. All of the individuals in a single group image are either in train OR test.
+    For each species, try to grab at least two group images and 20 samples per species. All of the individuals in a single group image are either in train OR val.
     """
     df = pl.read_json(cfg.annotations)
 

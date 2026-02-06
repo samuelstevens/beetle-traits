@@ -427,20 +427,31 @@ def validate(
                 images[f"images/{prefix}/random/beetle{beetle_id}"] = wandb.Image(img)
 
         # track worst predictions by line_err_raw using a min-heap for efficiency
+        # Extract only the data needed for plotting to avoid keeping entire batch arrays in memory
         sample_errors = jnp.nanmean(aux.line_err_raw, axis=1)  # take mean of the lines
         for j, err in enumerate(sample_errors):
             if jnp.isnan(err):
                 continue
             err_val = float(err)
-            candidate = (err_val, batch, metadata, aux.preds, j)
+            # Extract single-sample batch/metadata/preds for plot_preds compatibility
+            sample_batch = {
+                "points_px": np.asarray(batch["points_px"][j])[np.newaxis],
+                "scale": np.asarray(batch["scale"][j])[np.newaxis],
+            }
+            sample_metadata = {
+                "img_fpath": [metadata["img_fpath"][j]],
+                "beetle_id": [metadata["beetle_id"][j]],
+            }
+            sample_preds = np.asarray(aux.preds[j])[np.newaxis]
+            candidate = (err_val, sample_batch, sample_metadata, sample_preds)
             if len(worst_candidates) < cfg.n_val_worst:
                 heapq.heappush(worst_candidates, candidate)
             elif err_val > worst_candidates[0][0]:
                 heapq.heapreplace(worst_candidates, candidate)
 
     # plot worst predictions
-    for err, batch, metadata, preds, sample_idx in worst_candidates:
-        beetle_id, img = plot_preds(batch, metadata, preds, sample_idx)
+    for err, sample_batch, sample_metadata, sample_preds in worst_candidates:
+        beetle_id, img = plot_preds(sample_batch, sample_metadata, sample_preds, 0)
         images[f"images/{prefix}/worst/beetle{beetle_id}"] = wandb.Image(img)
 
     metrics = {
