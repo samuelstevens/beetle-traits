@@ -46,6 +46,7 @@ watcher_on_save = "autorun"
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.151.5",
     "pdoc3>=0.11.6",
     "pytest>=8.4.1",
     "ruff>=0.12.4",
