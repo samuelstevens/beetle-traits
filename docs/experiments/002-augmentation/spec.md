@@ -20,6 +20,7 @@ The highest-risk failure mode is wrong physical metrics (cm) due to coordinate-s
 | Eval pipeline | `DecodeRGB -> Resize(256) -> Normalize` (no augmentation). |
 | Normalization | ImageNet mean/std: `mean=(0.485, 0.456, 0.406)`, `std=(0.229, 0.224, 0.225)`. |
 | Crop params | `scale=(0.5, 1.0)`, `ratio=(3/4, 4/3)` (shape distortion allowed). |
+| Rotation sampling | With probability `rotation_prob`, sample `k` uniformly from `{1,2,3}`; otherwise `k=0` (identity). |
 | OOB supervision policy | Configurable literal with options `"mask_any_oob"`, `"mask_all_oob"`, `"supervise_oob"`. Default: `"supervise_oob"`. |
 | OOB coordinates | No clipping. |
 | OOB logging | Log `oob_points_frac` for each batch. |
@@ -28,7 +29,7 @@ The highest-risk failure mode is wrong physical metrics (cm) due to coordinate-s
 | Pixel metrics | Remove pixel-space metrics from reported training/validation metrics. |
 | Missing scalebar | Keep sample for training loss, but exclude from cm metrics in both train and validation via `metric_mask_cm=0`. |
 | Scalebar physical length | Assume scalebar length is always `1.0 cm`. |
-| Acceptance checks | Run quick comparison (`2000` steps each): baseline vs normalization-only vs full augmentation. Also run an optional `2 hour` best-config run. |
+| Acceptance checks | Use fixed-seed thresholds (defined below) on `2000`-step runs before any `2 hour` run. |
 
 ## Data Contract
 
@@ -54,6 +55,7 @@ Invariant assertions:
 2. `tgt` equals applying `t_aug_from_orig` to `points_px` (within tolerance).
 3. All matrix values are finite.
 4. In-bounds convention is `0 <= x < 256` and `0 <= y < 256` when computing OOB counters.
+5. If `px_per_cm <= min_px_per_cm` or non-finite, set `metric_mask_cm=0`.
 
 ## Affine Composition Rules
 
@@ -109,6 +111,7 @@ On `s=256` with in-bounds `[0, s)`:
 ```
 
 Use matrix powers/composition for `k in {0,1,2,3}`.
+Sampling rule: if `rng.random() < rotation_prob`, sample `k` uniformly from `{1,2,3}`; else `k=0`.
 
 ## AugmentConfig
 
@@ -127,6 +130,7 @@ class AugmentConfig:
     hflip_prob: float = 0.5
     vflip_prob: float = 0.5
     rotation_prob: float = 0.75
+    """Probability of applying a non-identity 90-degree rotation."""
 
     brightness: float = 0.2
     contrast: float = 0.2
@@ -134,11 +138,14 @@ class AugmentConfig:
     hue: float = 0.1
 
     oob_policy: tp.Literal["mask_any_oob", "mask_all_oob", "supervise_oob"] = "supervise_oob"
+    min_px_per_cm: float = 1e-6
+    """If px_per_cm <= min_px_per_cm, cm metrics are masked out (metric_mask_cm=0)."""
 ```
 
 Notes:
 
 - `size` is fixed at `256` for this experiment and should be asserted.
+- `hflip_prob` and `vflip_prob` are sampled independently.
 - With default `oob_policy="supervise_oob"`, `loss_mask` is not modified by OOB status.
 
 ## Metric Definitions
@@ -152,9 +159,11 @@ Given predictions `pred_aug` and targets `tgt` in augmented space:
 2. Ground truth in original space is `points_px`.
 3. Per-sample `px_per_cm`:
    - `px_per_cm = ||scalebar_px[1] - scalebar_px[0]||` (scalebar is `1 cm`).
-4. Convert point/line errors:
-   - `err_cm = err_px_orig / px_per_cm`.
-5. If `metric_mask_cm == 0`, cm metrics for that sample are set to `nan` and excluded from aggregate means/medians.
+4. Validate cm metric denominator:
+   - if `px_per_cm` is non-finite or `px_per_cm <= min_px_per_cm`, set `metric_mask_cm=0`.
+5. Convert point/line errors:
+   - `err_cm = err_px_orig / px_per_cm` only when `metric_mask_cm=1`.
+6. If `metric_mask_cm == 0`, cm metrics for that sample are set to `nan` and excluded from aggregate means/medians.
 
 Point metric endpoint matching is order-invariant per line:
 
@@ -163,7 +172,7 @@ Point metric endpoint matching is order-invariant per line:
 
 ## Missing Scalebar Policy
 
-If a sample has no valid scalebar annotation:
+If a sample has no valid scalebar annotation, or a degenerate/invalid scalebar (`px_per_cm <= min_px_per_cm`):
 
 1. Keep the sample in training.
 2. Keep training loss active on keypoints (subject to `loss_mask` from dataset).
@@ -206,3 +215,25 @@ This is diagnostic only; it does not alter supervision with default `supervise_o
    - normalization-only,
    - full augmentation,
    with `2000`-step quick runs and optional `2 hour` run.
+
+## Acceptance Criteria
+
+Primary metric: `val/line_err_cm` (lower is better).
+Guardrail metric: `val/point_err_cm`.
+
+Quick runs:
+
+1. Run baseline, normalization-only, and full augmentation for `2000` steps using fixed seeds `[17, 23, 47]`.
+2. At step `2000`, compute the mean across seeds for `val/line_err_cm` and `val/point_err_cm`.
+3. Pass/fail thresholds:
+   - Normalization-only must satisfy `mean(val/line_err_cm)_norm <= 1.02 * mean(val/line_err_cm)_base`.
+   - Full augmentation is eligible for `2 hour` run only if:
+     - `mean(val/line_err_cm)_aug <= 0.98 * mean(val/line_err_cm)_norm`, and
+     - `mean(val/point_err_cm)_aug <= 1.02 * mean(val/point_err_cm)_norm`.
+
+Two-hour run:
+
+1. Run normalization-only and full augmentation for up to `2 hours` (same seed/hardware budget).
+2. Promote full augmentation only if final validation metrics satisfy:
+   - `val/line_err_cm_aug <= 0.98 * val/line_err_cm_norm`, and
+   - `val/point_err_cm_aug <= 1.02 * val/point_err_cm_norm`.
