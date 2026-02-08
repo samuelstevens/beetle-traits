@@ -22,6 +22,13 @@ def _sample() -> dict[str, object]:
     }
 
 
+def _spatial_sample() -> dict[str, object]:
+    sample = _sample()
+    sample["t_aug_from_orig"] = np.eye(3, dtype=np.float32)
+    sample["metric_mask_cm"] = 1.0
+    return sample
+
+
 def test_augment_config_requires_fixed_size():
     with pytest.raises(AssertionError):
         augment.AugmentConfig(size=128)
@@ -195,7 +202,7 @@ def test_finalize_targets_matches_affine_application_and_inverse_identity():
 def test_finalize_targets_applies_oob_policy_to_loss_mask(
     oob_policy: augment.OobPolicy, expected: np.ndarray
 ):
-    sample = _sample()
+    sample = _spatial_sample()
     sample["points_px"] = np.array(
         [
             [[10.0, 20.0], [300.0, 40.0]],
@@ -203,8 +210,96 @@ def test_finalize_targets_applies_oob_policy_to_loss_mask(
         ],
         dtype=np.float32,
     )
-    sample["metric_mask_cm"] = 1.0
-    sample["t_aug_from_orig"] = np.eye(3, dtype=np.float32)
     cfg = augment.AugmentConfig(oob_policy=oob_policy)
     out = augment.FinalizeTargets(cfg=cfg).map(sample)
     np.testing.assert_allclose(out["loss_mask"], expected, atol=1e-8)
+
+
+def test_finalize_targets_asserts_when_affine_has_non_finite_values():
+    sample = _spatial_sample()
+    sample["t_aug_from_orig"] = np.array(
+        [
+            [1.0, 0.0, np.nan],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    with pytest.raises(AssertionError):
+        _ = augment.FinalizeTargets(cfg=augment.AugmentConfig()).map(sample)
+
+
+def test_affine_composition_order_is_not_commutative():
+    points = np.array(
+        [
+            [[10.0, 20.0], [30.0, 40.0]],
+            [[80.0, 100.0], [160.0, 190.0]],
+        ],
+        dtype=np.float32,
+    )
+    rot = augment.get_rot90_affine(k=1, size=256)
+    flip = augment.get_hflip_affine(size=256)
+    rot_then_flip = augment.apply_affine_to_points(flip @ rot, points)
+    flip_then_rot = augment.apply_affine_to_points(rot @ flip, points)
+    assert not np.allclose(rot_then_flip, flip_then_rot, atol=1e-6)
+
+
+def test_random_resized_crop_is_identity_at_full_scale_square_ratio():
+    cfg = augment.AugmentConfig(
+        crop_scale_min=1.0,
+        crop_scale_max=1.0,
+        crop_ratio_min=1.0,
+        crop_ratio_max=1.0,
+    )
+    sample = _spatial_sample()
+    out = augment.RandomResizedCrop(cfg).random_map(
+        sample,
+        np.random.default_rng(seed=17),
+    )
+    np.testing.assert_allclose(out["t_aug_from_orig"], np.eye(3), atol=1e-6)
+
+
+def test_random_flip_prob_zero_is_identity():
+    cfg = augment.AugmentConfig(hflip_prob=0.0, vflip_prob=0.0)
+    sample = _spatial_sample()
+    out = augment.RandomFlip(cfg).random_map(sample, np.random.default_rng(seed=17))
+    np.testing.assert_allclose(out["t_aug_from_orig"], np.eye(3), atol=1e-6)
+
+
+def test_random_flip_prob_one_applies_hflip_when_vflip_disabled():
+    cfg = augment.AugmentConfig(hflip_prob=1.0, vflip_prob=0.0)
+    sample = _spatial_sample()
+    out = augment.RandomFlip(cfg).random_map(sample, np.random.default_rng(seed=17))
+    expected = augment.get_hflip_affine(size=256)
+    np.testing.assert_allclose(out["t_aug_from_orig"], expected, atol=1e-6)
+
+
+def test_random_rotation_prob_zero_is_identity():
+    cfg = augment.AugmentConfig(rotation_prob=0.0)
+    sample = _spatial_sample()
+    out = augment.RandomRotation90(cfg).random_map(
+        sample, np.random.default_rng(seed=17)
+    )
+    np.testing.assert_allclose(out["t_aug_from_orig"], np.eye(3), atol=1e-6)
+
+
+def test_random_rotation_prob_one_is_non_identity():
+    cfg = augment.AugmentConfig(rotation_prob=1.0)
+    sample = _spatial_sample()
+    out = augment.RandomRotation90(cfg).random_map(
+        sample, np.random.default_rng(seed=17)
+    )
+    assert not np.allclose(out["t_aug_from_orig"], np.eye(3), atol=1e-6)
+
+
+def test_color_jitter_zero_strength_is_noop():
+    cfg = augment.AugmentConfig(
+        brightness=0.0,
+        contrast=0.0,
+        saturation=0.0,
+        hue=0.0,
+    )
+    sample = _sample()
+    sample["img"] = np.full((256, 256, 3), 0.25, dtype=np.float32)
+    out = augment.ColorJitter(cfg).random_map(sample, np.random.default_rng(seed=17))
+    np.testing.assert_allclose(out["img"], sample["img"], atol=1e-6)

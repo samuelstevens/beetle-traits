@@ -155,3 +155,18 @@ def test_get_metric_mask_cm_respects_input_metric_mask():
     )
     np.testing.assert_allclose(np.asarray(out_mask), np.array([0.0, 1.0]), atol=1e-8)
     np.testing.assert_allclose(np.asarray(px_per_cm), np.array([5.0, 7.0]), atol=1e-8)
+
+
+def test_get_metric_mask_cm_masks_at_exact_min_threshold():
+    scalebar = jnp.array(
+        [
+            [[0.0, 0.0], [1e-6, 0.0]],
+            [[0.0, 0.0], [2e-6, 0.0]],
+        ],
+        dtype=jnp.float32,
+    )
+    metric_mask_cm = jnp.array([1.0, 1.0], dtype=jnp.float32)
+    out_mask, _ = metrics.get_metric_mask_cm(
+        scalebar, metric_mask_cm, min_px_per_cm=1e-6
+    )
+    np.testing.assert_allclose(np.asarray(out_mask), np.array([0.0, 1.0]), atol=1e-8)
