@@ -436,14 +436,14 @@ def validate(
             err_val = float(err)
             # Extract single-sample batch/metadata/preds for plot_preds compatibility
             sample_batch = {
-                "points_px": np.asarray(batch["points_px"][j])[np.newaxis],
-                "scale": np.asarray(batch["scale"][j])[np.newaxis],
+                "points_px": jnp.asarray(batch["points_px"][j])[jnp.newaxis],
+                "scale": jnp.asarray(batch["scale"][j])[jnp.newaxis],
             }
             sample_metadata = {
                 "img_fpath": [metadata["img_fpath"][j]],
                 "beetle_id": [metadata["beetle_id"][j]],
             }
-            sample_preds = np.asarray(aux.preds[j])[np.newaxis]
+            sample_preds = jnp.asarray(aux.preds[j])[jnp.newaxis]
             candidate = (err_val, sample_batch, sample_metadata, sample_preds)
             if len(worst_candidates) < cfg.n_val_worst:
                 heapq.heappush(worst_candidates, candidate)
