@@ -78,6 +78,7 @@ def make_dataset(
     n_workers: int,
     shuffle: bool,
     finite: bool,
+    imagenet_normalize: bool = False,
 ):
     datasets = []
     weights = []
@@ -92,7 +93,7 @@ def make_dataset(
         ds = grain.MapDataset.source(source).seed(seed)
         if shuffle:
             ds = ds.shuffle()
-        ds = ds.map(btx.data.utils.DecodeRGB()).map(btx.data.utils.Resize())
+        ds = ds.map(btx.data.utils.DecodeRGB()).map(btx.data.utils.Resize(imagenet_normalize=imagenet_normalize))
 
         datasets.append(ds)
         weights.append(len(source))
@@ -538,6 +539,8 @@ def train(cfg: Config):
     # Get training species for seen/unseen validation metrics
     training_species = get_training_species(cfg)
 
+    imagenet_normalize = isinstance(cfg.model, btx.modeling.frozen.Frozen)
+
     # Create separate validation dataloaders for each dataset
     # Each entry: (dataloader, fixed_indices, total_samples, use_species_split)
     val_datasets = {}
@@ -558,6 +561,7 @@ def train(cfg: Config):
                 n_workers=cfg.n_workers,
                 shuffle=False,
                 finite=True,
+                imagenet_normalize=imagenet_normalize,
             )
             val_datasets["val/hawaii"] = (hawaii_val_dl, hawaii_fixed_indices, hawaii_total, False)
             logger.info("Hawaii validation: %d samples, fixed indices: %s", hawaii_total, hawaii_fixed_indices)
@@ -578,6 +582,7 @@ def train(cfg: Config):
                 n_workers=cfg.n_workers,
                 shuffle=False,
                 finite=True,
+                imagenet_normalize=imagenet_normalize,
             )
             val_datasets["val/biorepo"] = (biorepo_val_dl, biorepo_fixed_indices, biorepo_total, True)
             logger.info("BioRepo validation: %d samples, fixed indices: %s", biorepo_total, biorepo_fixed_indices)
@@ -595,6 +600,7 @@ def train(cfg: Config):
         n_workers=cfg.n_workers,
         shuffle=True,
         finite=False,
+        imagenet_normalize=imagenet_normalize,
     )
 
     model = btx.modeling.make(cfg.model, key)
