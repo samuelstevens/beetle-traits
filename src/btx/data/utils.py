@@ -90,3 +90,30 @@ class GaussianHeatmap(grain.transforms.Map):
 
         The heatmap should be a Gaussian/normal distribution centered on the tgt keypoint, with a peak of 1.0 and a std dev of self.sigma.
         """
+
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
+class Normalize(grain.transforms.Map):
+    mean: tuple[float, float, float] = (0.485, 0.456, 0.406)
+    std: tuple[float, float, float] = (0.229, 0.224, 0.225)
+
+    def map(self, sample: dict[str, object]) -> dict[str, object]:
+        img = sample["img"]
+        msg = f"Expected ndarray image, got {type(img)}"
+        assert isinstance(img, np.ndarray), msg
+        assert img.ndim == 3 and img.shape[-1] == 3, (
+            f"Expected HWC image with 3 channels, got {img.shape}"
+        )
+
+        mean = np.asarray(self.mean, dtype=np.float32)
+        std = np.asarray(self.std, dtype=np.float32)
+        assert mean.shape == (3,), f"Expected mean shape (3,), got {mean.shape}"
+        assert std.shape == (3,), f"Expected std shape (3,), got {std.shape}"
+        assert np.all(np.isfinite(mean)), "mean must be finite"
+        assert np.all(np.isfinite(std)), "std must be finite"
+        assert np.all(std > 0.0), "std must be positive"
+
+        img_f32 = img.astype(np.float32, copy=False)
+        sample["img"] = (img_f32 - mean[None, None, :]) / std[None, None, :]
+        return sample

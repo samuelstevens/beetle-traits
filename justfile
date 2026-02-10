@@ -13,3 +13,5 @@ fmt:
 clean:
     rm -rf .ruff_cache/
 
+test:
+    uv run pytest --cov btx

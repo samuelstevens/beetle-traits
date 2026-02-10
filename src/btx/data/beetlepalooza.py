@@ -137,6 +137,13 @@ def _trusted_data(cfg: Config) -> pl.DataFrame:
         "scalebar_px",
         "scientific_name",
     ]).agg(pl.col("measurements"))
+    # Keep dataset indexing deterministic across runs.
+    annotations_filtered = annotations_filtered.sort([
+        "individual_id",
+        "beetle_position",
+        "group_img_basename",
+        "indiv_img_rel_path",
+    ])
     logger.info(
         f"{annotations_filtered.height} annotations remain after enforcing 2 measurements per annotation."
     )

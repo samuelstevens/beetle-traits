@@ -5,6 +5,7 @@ import beartype
 import grain
 import numpy as np
 from jaxtyping import Bool, Float, jaxtyped
+from PIL import Image, ImageEnhance
 
 OobPolicy = tp.Literal["mask_any_oob", "mask_all_oob", "supervise_oob"]
 
@@ -43,6 +44,10 @@ class AugmentConfig:
     """Color jitter saturation strength."""
     hue: float = 0.1
     """Color jitter hue strength."""
+    color_jitter_prob: float = 1.0
+    """Probability of applying color jitter when any jitter strength is nonzero."""
+    normalize: bool = True
+    """Whether to apply ImageNet normalization at the end of the transform pipeline."""
 
     oob_policy: OobPolicy = "supervise_oob"
     """Out-of-bounds supervision policy."""
@@ -52,55 +57,138 @@ class AugmentConfig:
     def __post_init__(self):
         msg = f"Expected fixed size 256 for experiment, got {self.size}"
         assert self.size == 256, msg
+        msg = f"Expected color_jitter_prob in [0, 1], got {self.color_jitter_prob}"
+        assert 0.0 <= self.color_jitter_prob <= 1.0, msg
 
 
 @jaxtyped(typechecker=beartype.beartype)
 def get_identity_affine() -> Float[np.ndarray, "3 3"]:
-    raise NotImplementedError()
+    return np.eye(3, dtype=np.float32)
 
 
 @jaxtyped(typechecker=beartype.beartype)
 def get_crop_resize_affine(
-    x0: float,
-    y0: float,
-    crop_w: float,
-    crop_h: float,
-    *,
-    size: int,
+    x0: float, y0: float, crop_w: float, crop_h: float, *, size: int
 ) -> Float[np.ndarray, "3 3"]:
-    raise NotImplementedError()
+    msg = f"Expected positive crop size, got crop_w={crop_w}, crop_h={crop_h}"
+    assert crop_w > 0.0 and crop_h > 0.0, msg
+    sx = size / crop_w
+    sy = size / crop_h
+    return np.array(
+        [
+            [sx, 0.0, -sx * x0],
+            [0.0, sy, -sy * y0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
 
 
 @jaxtyped(typechecker=beartype.beartype)
 def get_hflip_affine(*, size: int) -> Float[np.ndarray, "3 3"]:
-    raise NotImplementedError()
+    return np.array(
+        [
+            [-1.0, 0.0, size - 1.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
 
 
 @jaxtyped(typechecker=beartype.beartype)
 def get_vflip_affine(*, size: int) -> Float[np.ndarray, "3 3"]:
-    raise NotImplementedError()
+    return np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, -1.0, size - 1.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
 
 
 @jaxtyped(typechecker=beartype.beartype)
 def get_rot90_affine(k: int, *, size: int) -> Float[np.ndarray, "3 3"]:
-    raise NotImplementedError()
+    msg = f"Expected k in {{0,1,2,3}}, got {k}"
+    assert k in {0, 1, 2, 3}, msg
+    base = np.array(
+        [
+            [0.0, 1.0, 0.0],
+            [-1.0, 0.0, size - 1.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    return np.linalg.matrix_power(base, k)
 
 
 @jaxtyped(typechecker=beartype.beartype)
 def apply_affine_to_points(
-    affine_33: Float[np.ndarray, "3 3"],
-    points_l22: Float[np.ndarray, "lines 2 2"],
+    affine_33: Float[np.ndarray, "3 3"], points_l22: Float[np.ndarray, "lines 2 2"]
 ) -> Float[np.ndarray, "lines 2 2"]:
-    raise NotImplementedError()
+    msg = f"Expected affine shape (3, 3), got {affine_33.shape}"
+    assert affine_33.shape == (3, 3), msg
+    msg = f"Expected points last shape (2, 2), got {points_l22.shape}"
+    assert points_l22.shape[1:] == (2, 2), msg
+
+    dt = np.result_type(affine_33.dtype, points_l22.dtype)
+    pts = points_l22.reshape(-1, 2).astype(dt, copy=False)
+    ones = np.ones((pts.shape[0], 1), dtype=dt)
+    hom = np.concatenate([pts, ones], axis=1).T
+    out = (affine_33.astype(dt, copy=False) @ hom).T[:, :2]
+    return out.reshape(points_l22.shape)
 
 
 @jaxtyped(typechecker=beartype.beartype)
 def is_in_bounds(
-    points_l22: Float[np.ndarray, "lines 2 2"],
-    *,
-    size: int,
+    points_l22: Float[np.ndarray, "lines 2 2"], *, size: int
 ) -> Bool[np.ndarray, "lines 2"]:
-    raise NotImplementedError()
+    x = points_l22[:, :, 0]
+    y = points_l22[:, :, 1]
+    return (x >= 0.0) & (x < size) & (y >= 0.0) & (y < size)
+
+
+@beartype.beartype
+def _sample_dct(element: object) -> dict[str, object]:
+    msg = f"Expected sample dict, got {type(element)}"
+    assert isinstance(element, dict), msg
+    return element
+
+
+@beartype.beartype
+def _as_img_f32(img: object) -> Float[np.ndarray, "h w c"]:
+    if isinstance(img, Image.Image):
+        return np.asarray(img.convert("RGB"), dtype=np.float32) / 255.0
+
+    msg = f"Expected ndarray or PIL image, got {type(img)}"
+    assert isinstance(img, np.ndarray), msg
+    assert img.ndim == 3 and img.shape[2] == 3, f"Expected HWC image, got {img.shape}"
+    if np.issubdtype(img.dtype, np.integer):
+        return img.astype(np.float32) / 255.0
+    return img.astype(np.float32, copy=False)
+
+
+@beartype.beartype
+def _resize_img(
+    img_hwc: Float[np.ndarray, "h w c"], *, size: int
+) -> Float[np.ndarray, "size size c"]:
+    arr_u8 = np.clip(np.rint(img_hwc * 255.0), 0.0, 255.0).astype(np.uint8)
+    pil = Image.fromarray(arr_u8)
+    out = pil.resize((size, size), resample=Image.Resampling.BILINEAR)
+    return np.asarray(out, dtype=np.float32) / 255.0
+
+
+@beartype.beartype
+def _compose_affine(
+    sample: dict[str, object],
+    next_from_prev_33: Float[np.ndarray, "3 3"],
+) -> None:
+    msg = "Missing running affine key 't_aug_from_orig'"
+    assert "t_aug_from_orig" in sample, msg
+    t_prev = np.asarray(sample["t_aug_from_orig"], dtype=np.float64)
+    assert t_prev.shape == (3, 3), f"Expected affine shape (3, 3), got {t_prev.shape}"
+    sample["t_aug_from_orig"] = np.asarray(next_from_prev_33, dtype=np.float64) @ t_prev
 
 
 @beartype.beartype
@@ -110,7 +198,58 @@ class InitAugState(grain.transforms.Map):
     min_px_per_cm: float = 1e-6
 
     def map(self, element: object) -> object:
-        raise NotImplementedError()
+        sample = _sample_dct(element)
+        sample["img"] = _as_img_f32(sample["img"])
+
+        points_px = np.asarray(sample["points_px"], dtype=np.float32)
+        scalebar_px = np.asarray(sample["scalebar_px"], dtype=np.float32)
+        loss_mask = np.asarray(sample["loss_mask"], dtype=np.float32)
+        assert points_px.shape == (2, 2, 2), (
+            f"Expected points_px shape (2, 2, 2), got {points_px.shape}"
+        )
+        assert scalebar_px.shape == (2, 2), (
+            f"Expected scalebar_px shape (2, 2), got {scalebar_px.shape}"
+        )
+        assert loss_mask.shape == (2,), (
+            f"Expected loss_mask shape (2,), got {loss_mask.shape}"
+        )
+        assert np.all(np.isfinite(points_px)), "points_px must be finite"
+        assert np.all(np.isfinite(scalebar_px)), "scalebar_px must be finite"
+
+        sample["points_px"] = points_px
+        sample["scalebar_px"] = scalebar_px
+        sample["loss_mask"] = loss_mask
+
+        px_per_cm = np.linalg.norm(scalebar_px[1] - scalebar_px[0])
+        valid = np.isfinite(px_per_cm) and (px_per_cm > self.min_px_per_cm)
+        sample["metric_mask_cm"] = np.float32(1.0 if valid else 0.0)
+
+        ident = np.eye(3, dtype=np.float64)
+        sample["t_aug_from_orig"] = ident
+        sample["t_orig_from_aug"] = ident.copy()
+        sample["oob_points_frac"] = np.float32(0.0)
+        return sample
+
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
+class Resize(grain.transforms.Map):
+    size: int = 256
+
+    def map(self, element: object) -> object:
+        sample = _sample_dct(element)
+        img = _as_img_f32(sample["img"])
+        h, w, _ = img.shape
+        sample["img"] = _resize_img(img, size=self.size)
+        next_from_prev = get_crop_resize_affine(
+            x0=0.0,
+            y0=0.0,
+            crop_w=float(w),
+            crop_h=float(h),
+            size=self.size,
+        )
+        _compose_affine(sample, next_from_prev)
+        return sample
 
 
 @beartype.beartype
@@ -118,12 +257,33 @@ class InitAugState(grain.transforms.Map):
 class RandomResizedCrop(grain.transforms.RandomMap):
     cfg: AugmentConfig
 
-    def random_map(
-        self,
-        element: object,
-        rng: np.random.Generator,
-    ) -> object:
-        raise NotImplementedError()
+    def random_map(self, element: object, rng: np.random.Generator) -> object:
+        sample = _sample_dct(element)
+        img = _as_img_f32(sample["img"])
+        h, w, _ = img.shape
+        area = float(h * w)
+
+        scale = float(rng.uniform(self.cfg.crop_scale_min, self.cfg.crop_scale_max))
+        ratio = float(rng.uniform(self.cfg.crop_ratio_min, self.cfg.crop_ratio_max))
+        crop_w = int(round(np.sqrt(area * scale * ratio)))
+        crop_h = int(round(np.sqrt(area * scale / ratio)))
+        crop_w = int(np.clip(crop_w, 1, w))
+        crop_h = int(np.clip(crop_h, 1, h))
+
+        x0 = 0 if crop_w == w else int(rng.integers(0, w - crop_w + 1))
+        y0 = 0 if crop_h == h else int(rng.integers(0, h - crop_h + 1))
+        crop = img[y0 : y0 + crop_h, x0 : x0 + crop_w]
+
+        sample["img"] = _resize_img(crop, size=self.cfg.size)
+        next_from_prev = get_crop_resize_affine(
+            x0=float(x0),
+            y0=float(y0),
+            crop_w=float(crop_w),
+            crop_h=float(crop_h),
+            size=self.cfg.size,
+        )
+        _compose_affine(sample, next_from_prev)
+        return sample
 
 
 @beartype.beartype
@@ -131,12 +291,19 @@ class RandomResizedCrop(grain.transforms.RandomMap):
 class RandomFlip(grain.transforms.RandomMap):
     cfg: AugmentConfig
 
-    def random_map(
-        self,
-        element: object,
-        rng: np.random.Generator,
-    ) -> object:
-        raise NotImplementedError()
+    def random_map(self, element: object, rng: np.random.Generator) -> object:
+        sample = _sample_dct(element)
+        img = _as_img_f32(sample["img"])
+
+        if rng.random() < self.cfg.hflip_prob:
+            img = np.flip(img, axis=1).copy()
+            _compose_affine(sample, get_hflip_affine(size=self.cfg.size))
+        if rng.random() < self.cfg.vflip_prob:
+            img = np.flip(img, axis=0).copy()
+            _compose_affine(sample, get_vflip_affine(size=self.cfg.size))
+
+        sample["img"] = img
+        return sample
 
 
 @beartype.beartype
@@ -144,12 +311,17 @@ class RandomFlip(grain.transforms.RandomMap):
 class RandomRotation90(grain.transforms.RandomMap):
     cfg: AugmentConfig
 
-    def random_map(
-        self,
-        element: object,
-        rng: np.random.Generator,
-    ) -> object:
-        raise NotImplementedError()
+    def random_map(self, element: object, rng: np.random.Generator) -> object:
+        sample = _sample_dct(element)
+        img = _as_img_f32(sample["img"])
+        if rng.random() < self.cfg.rotation_prob:
+            k = int(rng.integers(1, 4))
+        else:
+            k = 0
+
+        sample["img"] = np.rot90(img, k=k, axes=(0, 1)).copy()
+        _compose_affine(sample, get_rot90_affine(k=k, size=self.cfg.size))
+        return sample
 
 
 @beartype.beartype
@@ -157,12 +329,51 @@ class RandomRotation90(grain.transforms.RandomMap):
 class ColorJitter(grain.transforms.RandomMap):
     cfg: AugmentConfig
 
-    def random_map(
-        self,
-        element: object,
-        rng: np.random.Generator,
-    ) -> object:
-        raise NotImplementedError()
+    def random_map(self, element: object, rng: np.random.Generator) -> object:
+        sample = _sample_dct(element)
+        img = _as_img_f32(sample["img"])
+        if self.cfg.color_jitter_prob <= 0.0:
+            sample["img"] = img
+            return sample
+        if (
+            self.cfg.brightness == 0.0
+            and self.cfg.contrast == 0.0
+            and self.cfg.saturation == 0.0
+            and self.cfg.hue == 0.0
+        ):
+            sample["img"] = img
+            return sample
+        if rng.random() >= self.cfg.color_jitter_prob:
+            sample["img"] = img
+            return sample
+
+        arr_u8 = np.clip(np.rint(img * 255.0), 0.0, 255.0).astype(np.uint8)
+        pil = Image.fromarray(arr_u8)
+
+        if self.cfg.brightness > 0.0:
+            low = max(0.0, 1.0 - self.cfg.brightness)
+            high = 1.0 + self.cfg.brightness
+            pil = ImageEnhance.Brightness(pil).enhance(float(rng.uniform(low, high)))
+        if self.cfg.contrast > 0.0:
+            low = max(0.0, 1.0 - self.cfg.contrast)
+            high = 1.0 + self.cfg.contrast
+            pil = ImageEnhance.Contrast(pil).enhance(float(rng.uniform(low, high)))
+        if self.cfg.saturation > 0.0:
+            low = max(0.0, 1.0 - self.cfg.saturation)
+            high = 1.0 + self.cfg.saturation
+            pil = ImageEnhance.Color(pil).enhance(float(rng.uniform(low, high)))
+        if self.cfg.hue > 0.0:
+            delta = float(rng.uniform(-self.cfg.hue, self.cfg.hue))
+            hsv = np.asarray(pil.convert("HSV"), dtype=np.uint8).copy()
+            hue = hsv[:, :, 0].astype(np.int16)
+            hue = (hue + int(round(delta * 255.0))) % 256
+            hsv[:, :, 0] = hue.astype(np.uint8)
+            h, w, _ = hsv.shape
+            hsv_img = Image.frombuffer("HSV", (w, h), hsv.tobytes(), "raw", "HSV", 0, 1)
+            pil = hsv_img.convert("RGB")
+
+        sample["img"] = np.asarray(pil, dtype=np.float32) / 255.0
+        return sample
 
 
 @beartype.beartype
@@ -171,4 +382,48 @@ class FinalizeTargets(grain.transforms.Map):
     cfg: AugmentConfig
 
     def map(self, element: object) -> object:
-        raise NotImplementedError()
+        sample = _sample_dct(element)
+        points_px = np.asarray(sample["points_px"], dtype=np.float32)
+        t_aug_from_orig = np.asarray(sample["t_aug_from_orig"], dtype=np.float64)
+        assert points_px.shape == (2, 2, 2), (
+            f"Expected points_px shape (2, 2, 2), got {points_px.shape}"
+        )
+        assert t_aug_from_orig.shape == (3, 3), (
+            f"Expected affine shape (3, 3), got {t_aug_from_orig.shape}"
+        )
+        assert np.all(np.isfinite(t_aug_from_orig)), (
+            "Non-finite values in t_aug_from_orig"
+        )
+
+        t_orig_from_aug = np.linalg.inv(t_aug_from_orig)
+        assert np.all(np.isfinite(t_orig_from_aug)), (
+            "Non-finite values in t_orig_from_aug"
+        )
+        ident = t_orig_from_aug @ t_aug_from_orig
+        assert np.allclose(ident, np.eye(3, dtype=np.float64), atol=1e-9, rtol=0.0), (
+            f"Affine inverse invariant failed: {ident}"
+        )
+
+        tgt = apply_affine_to_points(t_aug_from_orig, points_px).astype(
+            np.float32, copy=False
+        )
+
+        in_bounds_l2 = is_in_bounds(tgt, size=self.cfg.size)
+        if self.cfg.oob_policy == "mask_any_oob":
+            keep_l = np.all(in_bounds_l2, axis=1)
+        elif self.cfg.oob_policy == "mask_all_oob":
+            keep_l = np.any(in_bounds_l2, axis=1)
+        else:
+            keep_l = np.ones(2, dtype=bool)
+
+        loss_mask = np.asarray(sample["loss_mask"], dtype=np.float32)
+        assert loss_mask.shape == (2,), (
+            f"Expected loss_mask shape (2,), got {loss_mask.shape}"
+        )
+
+        sample["loss_mask"] = loss_mask * keep_l.astype(np.float32)
+        sample["tgt"] = tgt
+        sample["t_aug_from_orig"] = t_aug_from_orig.astype(np.float32, copy=False)
+        sample["t_orig_from_aug"] = t_orig_from_aug.astype(np.float32, copy=False)
+        sample["oob_points_frac"] = np.float32(1.0 - np.mean(in_bounds_l2))
+        return sample
