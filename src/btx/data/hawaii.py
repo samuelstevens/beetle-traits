@@ -242,7 +242,7 @@ class Dataset(grain.sources.RandomAccessDataSource):
         """Load image and annotations for given index."""
         row = self.df.row(index=idx, named=True)
         fpath = self.cfg.hf_root / "individual_specimens" / row["indiv_img_rel_path"]
-        assert fpath.is_file(), f"Image not found: {fpath}"
+        assert fpath.is_file(), f"Missing file {fpath}"
 
         elytra_width_px = None
         elytra_length_px = None

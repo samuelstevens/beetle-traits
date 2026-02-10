@@ -3,8 +3,9 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 from hypothesis.extra import numpy as hnp
+from PIL import Image
 
-from btx.data import augment
+from btx.data import augment, utils
 
 
 def _sample() -> dict[str, object]:
@@ -32,6 +33,12 @@ def _spatial_sample() -> dict[str, object]:
 def test_augment_config_requires_fixed_size():
     with pytest.raises(AssertionError):
         augment.AugmentConfig(size=128)
+
+
+@pytest.mark.parametrize("prob", [-0.1, 1.1])
+def test_augment_config_requires_valid_color_jitter_prob(prob: float):
+    with pytest.raises(AssertionError):
+        augment.AugmentConfig(color_jitter_prob=prob)
 
 
 def test_get_identity_affine_matches_eye():
@@ -168,6 +175,26 @@ def test_init_aug_state_masks_cm_metrics_for_degenerate_scalebar():
     assert float(out["metric_mask_cm"]) == 0.0
 
 
+def test_init_aug_state_converts_pil_image_to_float_array():
+    sample = _sample()
+    sample["img"] = Image.fromarray(np.full((256, 256, 3), 128, dtype=np.uint8))
+    out = augment.InitAugState(size=256).map(sample)
+    img = out["img"]
+    assert isinstance(img, np.ndarray)
+    assert img.dtype == np.float32
+    np.testing.assert_allclose(img[0, 0, 0], np.float32(128.0 / 255.0), atol=1e-6)
+
+
+def test_init_aug_state_converts_uint8_array_to_float_array():
+    sample = _sample()
+    sample["img"] = np.full((256, 256, 3), 64, dtype=np.uint8)
+    out = augment.InitAugState(size=256).map(sample)
+    img = out["img"]
+    assert isinstance(img, np.ndarray)
+    assert img.dtype == np.float32
+    np.testing.assert_allclose(img[0, 0, 0], np.float32(64.0 / 255.0), atol=1e-6)
+
+
 def test_finalize_targets_matches_affine_application_and_inverse_identity():
     sample = _sample()
     sample["metric_mask_cm"] = 1.0
@@ -229,6 +256,20 @@ def test_finalize_targets_asserts_when_affine_has_non_finite_values():
         _ = augment.FinalizeTargets(cfg=augment.AugmentConfig()).map(sample)
 
 
+def test_finalize_targets_seed2_regression_does_not_fail_inverse_invariant():
+    cfg = augment.AugmentConfig()
+    sample = augment.InitAugState(size=cfg.size, min_px_per_cm=cfg.min_px_per_cm).map(
+        _sample()
+    )
+    rng = np.random.default_rng(seed=2)
+    sample = augment.RandomResizedCrop(cfg).random_map(sample, rng)
+    sample = augment.RandomFlip(cfg).random_map(sample, rng)
+    sample = augment.RandomRotation90(cfg).random_map(sample, rng)
+    out = augment.FinalizeTargets(cfg=cfg).map(sample)
+    assert np.all(np.isfinite(out["t_aug_from_orig"]))
+    assert np.all(np.isfinite(out["t_orig_from_aug"]))
+
+
 def test_affine_composition_order_is_not_commutative():
     points = np.array(
         [
@@ -274,6 +315,14 @@ def test_random_flip_prob_one_applies_hflip_when_vflip_disabled():
     np.testing.assert_allclose(out["t_aug_from_orig"], expected, atol=1e-6)
 
 
+def test_random_flip_prob_one_applies_vflip_when_hflip_disabled():
+    cfg = augment.AugmentConfig(hflip_prob=0.0, vflip_prob=1.0)
+    sample = _spatial_sample()
+    out = augment.RandomFlip(cfg).random_map(sample, np.random.default_rng(seed=17))
+    expected = augment.get_vflip_affine(size=256)
+    np.testing.assert_allclose(out["t_aug_from_orig"], expected, atol=1e-6)
+
+
 def test_random_rotation_prob_zero_is_identity():
     cfg = augment.AugmentConfig(rotation_prob=0.0)
     sample = _spatial_sample()
@@ -303,3 +352,83 @@ def test_color_jitter_zero_strength_is_noop():
     sample["img"] = np.full((256, 256, 3), 0.25, dtype=np.float32)
     out = augment.ColorJitter(cfg).random_map(sample, np.random.default_rng(seed=17))
     np.testing.assert_allclose(out["img"], sample["img"], atol=1e-6)
+
+
+def test_color_jitter_prob_zero_is_noop_even_with_nonzero_strength():
+    cfg = augment.AugmentConfig(
+        brightness=0.5,
+        contrast=0.4,
+        saturation=0.4,
+        hue=0.1,
+        color_jitter_prob=0.0,
+    )
+    sample = _sample()
+    sample["img"] = np.array(
+        [
+            [[0.8, 0.2, 0.1], [0.7, 0.3, 0.2]],
+            [[0.6, 0.4, 0.2], [0.5, 0.4, 0.3]],
+        ],
+        dtype=np.float32,
+    )
+    out = augment.ColorJitter(cfg).random_map(sample, np.random.default_rng(seed=17))
+    np.testing.assert_allclose(out["img"], sample["img"], atol=1e-6)
+
+
+def test_color_jitter_nonzero_strength_produces_valid_float_image():
+    cfg = augment.AugmentConfig(
+        brightness=0.5,
+        contrast=0.4,
+        saturation=0.4,
+        hue=0.1,
+    )
+    sample = _sample()
+    sample["img"] = np.array(
+        [
+            [[0.8, 0.2, 0.1], [0.7, 0.3, 0.2]],
+            [[0.6, 0.4, 0.2], [0.5, 0.4, 0.3]],
+        ],
+        dtype=np.float32,
+    )
+    out = augment.ColorJitter(cfg).random_map(sample, np.random.default_rng(seed=17))
+    img = out["img"]
+    assert isinstance(img, np.ndarray)
+    assert img.dtype == np.float32
+    assert img.shape == (2, 2, 3)
+    assert np.all(np.isfinite(img))
+    assert np.all(img >= 0.0)
+    assert np.all(img <= 1.0)
+
+
+def test_resize_tracks_affine_and_keeps_original_points():
+    sample = {
+        "img": np.zeros((100, 200, 3), dtype=np.float32),
+        "points_px": np.array(
+            [
+                [[10.0, 20.0], [30.0, 40.0]],
+                [[100.0, 60.0], [140.0, 80.0]],
+            ],
+            dtype=np.float32,
+        ),
+        "scalebar_px": np.array([[5.0, 5.0], [25.0, 5.0]], dtype=np.float32),
+        "loss_mask": np.array([1.0, 1.0], dtype=np.float32),
+    }
+    out = augment.InitAugState(size=256).map(sample)
+    points_before = np.array(out["points_px"], copy=True)
+    out = augment.Resize(size=256).map(out)
+
+    expected = augment.get_crop_resize_affine(
+        x0=0.0,
+        y0=0.0,
+        crop_w=200.0,
+        crop_h=100.0,
+        size=256,
+    )
+    np.testing.assert_allclose(out["t_aug_from_orig"], expected, atol=1e-6)
+    assert out["img"].shape == (256, 256, 3)
+    np.testing.assert_allclose(out["points_px"], points_before, atol=1e-8)
+
+
+def test_normalize_uses_imagenet_mean_std_by_default():
+    sample = {"img": np.array([[[0.485, 0.456, 0.406]]], dtype=np.float32)}
+    out = utils.Normalize().map(sample)
+    np.testing.assert_allclose(out["img"], np.zeros((1, 1, 3), dtype=np.float32))
