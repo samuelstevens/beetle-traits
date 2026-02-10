@@ -193,7 +193,7 @@ def _grouped_split(cfg: Config) -> pl.DataFrame:
         total_groups = row["total_groups"]
         val_groups_count = row["val_groups"]
 
-        split_type = "ALL VAL" if total_groups <= 2 else "MIXED"
+        split_type = "ALL VAL" if val_groups_count == total_groups else "MIXED"
         pct = 100 * val_count / total_count if total_count > 0 else 0
         logger.info(
             f"  {taxon_id} [{split_type}]: {val_count}/{total_count} samples ({pct:.1f}%), "
@@ -242,8 +242,7 @@ class Dataset(grain.sources.RandomAccessDataSource):
         """Load image and annotations for given index."""
         row = self.df.row(index=idx, named=True)
         fpath = self.cfg.hf_root / "individual_specimens" / row["indiv_img_rel_path"]
-        # TODO: include error message.
-        assert fpath.is_file()
+        assert fpath.is_file(), f"Image not found: {fpath}"
 
         elytra_width_px = None
         elytra_length_px = None
@@ -257,25 +256,16 @@ class Dataset(grain.sources.RandomAccessDataSource):
                 scalebar_px = measurement["polyline_px"]
 
         if elytra_width_px is None:
-            self.logger.error(
-                "Image %s beetle %d has no elytra width.",
-                row["group_img_rel_path"],
-                row["beetle_position"],
-            )
+            msg = f"Image {row['group_img_rel_path']} beetle {row['beetle_position']} has no elytra width."
+            self.logger.error(msg)
             elytra_width_px = [0.0, 0.0, 0.0, 0.0]
         if elytra_length_px is None:
-            self.logger.error(
-                "Image %s beetle %d has no elytra length.",
-                row["group_img_rel_path"],
-                row["beetle_position"],
-            )
+            msg = f"Image {row['group_img_rel_path']} beetle {row['beetle_position']} has no elytra length."
+            self.logger.error(msg)
             elytra_length_px = [0.0, 0.0, 0.0, 0.0]
         if scalebar_px is None:
-            self.logger.error(
-                "Image %s beetle %d has no scalebar.",
-                row["group_img_rel_path"],
-                row["beetle_position"],
-            )
+            msg = f"Image {row['group_img_rel_path']} beetle {row['beetle_position']} has no scalebar."
+            self.logger.error(msg)
             scalebar_px = [0.0, 0.0, 1.0, 1.0]
 
         if self.cfg.include_polylines:
@@ -292,4 +282,5 @@ class Dataset(grain.sources.RandomAccessDataSource):
             beetle_id=row["individual_id"],
             beetle_position=row["beetle_position"],
             group_img_basename=row["group_img_basename"],
+            scientific_name=row["scientific_name"],
         )

@@ -1,5 +1,6 @@
 # train.py
 import dataclasses
+import heapq
 import logging
 import pathlib
 import typing as tp
@@ -14,6 +15,8 @@ import numpy as np
 import optax
 from jaxtyping import Array, Float, PyTree, jaxtyped
 from PIL import Image, ImageDraw
+
+import polars as pl
 
 import btx.data
 import btx.modeling
@@ -49,6 +52,12 @@ class Config:
     """How often to log to stderr."""
     val_every: int = 1_000
     """How often to run the validation loop."""
+    n_val_fixed: int = 5
+    """Number of fixed validation images to track across training."""
+    n_val_worst: int = 1
+    """Number of worst predictions (highest error) to log."""
+    n_val_random: int = 1
+    """Number of randomly selected validation images per validation step."""
     n_steps: int = 100_000
     """Total number of training steps."""
     log_to: pathlib.Path = pathlib.Path("./logs")
@@ -69,6 +78,7 @@ def make_dataset(
     n_workers: int,
     shuffle: bool,
     finite: bool,
+    imagenet_normalize: bool = False,
 ):
     datasets = []
     weights = []
@@ -83,7 +93,7 @@ def make_dataset(
         ds = grain.MapDataset.source(source).seed(seed)
         if shuffle:
             ds = ds.shuffle()
-        ds = ds.map(btx.data.utils.DecodeRGB()).map(btx.data.utils.Resize())
+        ds = ds.map(btx.data.utils.DecodeRGB()).map(btx.data.utils.Resize(imagenet_normalize=imagenet_normalize))
 
         datasets.append(ds)
         weights.append(len(source))
@@ -300,18 +310,18 @@ def plot_preds(
     batch: dict[str, Array],
     metadata: dict[str, object],
     preds: Float[Array, "batch 2 2 2"],
+    sample_idx: int,
 ) -> tuple[str, Image.Image]:
-    # Process first image in batch
-    img_fpath = metadata["img_fpath"][0]
+    img_fpath = metadata["img_fpath"][sample_idx]
     img = Image.open(img_fpath)
 
     # Get ground truth points
-    gt_length_px, gt_width_px = batch["points_px"][0]
+    gt_length_px, gt_width_px = batch["points_px"][sample_idx]
 
-    scale_x, scale_y = batch["scale"][0]
+    scale_x, scale_y = batch["scale"][sample_idx]
 
     # Get predicted points
-    pred_px = preds[0].at[:, :, 0].divide(scale_x).at[:, :, 1].divide(scale_y)
+    pred_px = preds[sample_idx].at[:, :, 0].divide(scale_x).at[:, :, 1].divide(scale_y)
     pred_length_px, pred_width_px = pred_px
 
     # Draw on image
@@ -347,36 +357,157 @@ def plot_preds(
         draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=(255, 0, 0))
 
     # Extract individual ID from filepath
-    beetle_id = metadata["beetle_id"][0]
+    beetle_id = metadata["beetle_id"][sample_idx]
 
     return beetle_id, img
 
 
 @beartype.beartype
-def validate(cfg: Config, model: eqx.Module, val_dl, filter_spec: PyTree[bool]):
+def validate(
+    cfg: Config,
+    model: eqx.Module,
+    val_dl,
+    filter_spec: PyTree[bool],
+    fixed_indices: np.ndarray,
+    val_total_samples: int,
+    prefix: str = "val",
+    training_species: set[str] | None = None,
+):
     metrics = []
-    for batch in val_dl:
+
+    # Fixed indices - same samples tracked across training
+    fixed_batch_idxs = fixed_indices // cfg.batch_size
+    fixed_sample_batch_idxs = fixed_indices % cfg.batch_size
+
+    # Random indices - different samples each validation step
+    random_rng = np.random.default_rng()
+    random_indices = random_rng.choice(
+        val_total_samples, size=min(cfg.n_val_random, val_total_samples), replace=False
+    )
+    random_batch_idxs = random_indices // cfg.batch_size
+    random_sample_batch_idxs = random_indices % cfg.batch_size
+
+    images = {}
+    worst_candidates = []
+    seen_metrics = []
+    unseen_metrics = []
+
+    for i, batch in enumerate(val_dl):
         batch, metadata = to_device(batch)
         diff_model, static_model = eqx.partition(model, filter_spec)
         loss, aux = loss_and_aux(diff_model, static_model, batch)
         metrics.append(aux.metrics())
 
+        # Track seen vs unseen species metrics
+        if training_species is not None:
+            is_seen = jnp.array([name in training_species for name in metadata["scientific_name"]])
+            sample_loss = jnp.nanmean(aux.point_err_raw ** 2, axis=1)
+
+            seen_metrics.append({
+                "line_err_cm": jnp.where(is_seen[:, None], aux.line_err_cm, jnp.nan),
+                "point_err_cm": jnp.where(is_seen[:, None], aux.point_err_cm, jnp.nan),
+                "loss": jnp.where(is_seen, sample_loss, jnp.nan),
+            })
+            unseen_metrics.append({
+                "line_err_cm": jnp.where(~is_seen[:, None], aux.line_err_cm, jnp.nan),
+                "point_err_cm": jnp.where(~is_seen[:, None], aux.point_err_cm, jnp.nan),
+                "loss": jnp.where(~is_seen, sample_loss, jnp.nan),
+            })
+
+        # check to print any of the fixed images
+        actual_batch_size = aux.preds.shape[0]
+        for batch_idx, sample_idx in zip(fixed_batch_idxs, fixed_sample_batch_idxs):
+            if i == batch_idx and sample_idx < actual_batch_size:
+                beetle_id, img = plot_preds(batch, metadata, aux.preds, int(sample_idx))
+                images[f"images/{prefix}/fixed/beetle{beetle_id}"] = wandb.Image(img)
+
+        # check to print any of the random images
+        for batch_idx, sample_idx in zip(random_batch_idxs, random_sample_batch_idxs):
+            if i == batch_idx and sample_idx < actual_batch_size:
+                beetle_id, img = plot_preds(batch, metadata, aux.preds, int(sample_idx))
+                images[f"images/{prefix}/random/beetle{beetle_id}"] = wandb.Image(img)
+
+        # track worst predictions by line_err_raw using a min-heap for efficiency
+        # Extract only the data needed for plotting to avoid keeping entire batch arrays in memory
+        sample_errors = jnp.nanmean(aux.line_err_raw, axis=1)  # take mean of the lines
+        for j, err in enumerate(sample_errors):
+            if jnp.isnan(err):
+                continue
+            err_val = float(err)
+            # Extract single-sample batch/metadata/preds for plot_preds compatibility
+            sample_batch = {
+                "points_px": jnp.asarray(batch["points_px"][j])[jnp.newaxis],
+                "scale": jnp.asarray(batch["scale"][j])[jnp.newaxis],
+            }
+            sample_metadata = {
+                "img_fpath": [metadata["img_fpath"][j]],
+                "beetle_id": [metadata["beetle_id"][j]],
+            }
+            sample_preds = jnp.asarray(aux.preds[j])[jnp.newaxis]
+            candidate = (err_val, sample_batch, sample_metadata, sample_preds)
+            if len(worst_candidates) < cfg.n_val_worst:
+                heapq.heappush(worst_candidates, candidate)
+            elif err_val > worst_candidates[0][0]:
+                heapq.heapreplace(worst_candidates, candidate)
+
+    # plot worst predictions
+    for err, sample_batch, sample_metadata, sample_preds in worst_candidates:
+        beetle_id, img = plot_preds(sample_batch, sample_metadata, sample_preds, 0)
+        images[f"images/{prefix}/worst/beetle{beetle_id}"] = wandb.Image(img)
+
     metrics = {
         k: jnp.concatenate([dct[k].reshape(-1) for dct in metrics]) for k in metrics[0]
     }
 
-    means = {f"val/{k}": jnp.nanmean(v).item() for k, v in metrics.items()}
-    maxes = {f"val/max_{k}": jnp.nanmax(v).item() for k, v in metrics.items()}
-    medians = {f"val/median_{k}": jnp.nanmedian(v).item() for k, v in metrics.items()}
+    means = {f"{prefix}/{k}": jnp.nanmean(v).item() for k, v in metrics.items()}
+    maxes = {f"{prefix}/max_{k}": jnp.nanmax(v).item() for k, v in metrics.items()}
+    medians = {f"{prefix}/median_{k}": jnp.nanmedian(v).item() for k, v in metrics.items()}
 
-    beetle_id, img = plot_preds(batch, metadata, aux.preds)
+    # Compute seen vs unseen species metrics
+    seen_unseen_metrics = {}
+    if training_species is not None and seen_metrics:
+        all_seen = {k: jnp.concatenate([m[k].reshape(-1) for m in seen_metrics], axis=0) for k in seen_metrics[0]}
+        all_unseen = {k: jnp.concatenate([m[k].reshape(-1) for m in unseen_metrics], axis=0) for k in unseen_metrics[0]}
+
+        for key in ["line_err_cm", "point_err_cm", "loss"]:
+            seen_unseen_metrics[f"{prefix}/seen_{key}"] = jnp.nanmean(all_seen[key]).item()
+            seen_unseen_metrics[f"{prefix}/unseen_{key}"] = jnp.nanmean(all_unseen[key]).item()
+            seen_unseen_metrics[f"{prefix}/seen_max_{key}"] = jnp.nanmax(all_seen[key]).item()
+            seen_unseen_metrics[f"{prefix}/unseen_max_{key}"] = jnp.nanmax(all_unseen[key]).item()
+
     return {
         **means,
         **maxes,
         **medians,
-        f"images/val/beetle{beetle_id}": wandb.Image(img),
+        **seen_unseen_metrics,
+        **images,
     }
 
+@beartype.beartype
+def get_training_species(cfg: "Config") -> set[str]:
+    """Collect scientific names from training datasets (Hawaii train + BeetlePalooza).
+
+    Important: Only includes species from the TRAIN split, not validation.
+    """
+    species: set[str] = set()
+
+    # Hawaii training species - must filter by train split
+    if cfg.hawaii.go:
+        hawaii_train_cfg = dataclasses.replace(cfg.hawaii, split="train")
+        hawaii_source = hawaii_train_cfg.dataset(hawaii_train_cfg)
+        hawaii_species = hawaii_source.df.get_column("scientific_name").unique().to_list()
+        species.update(hawaii_species)
+        logger.info("Hawaii training species: %d unique", len(hawaii_species))
+
+    # BeetlePalooza species (no splits, all samples are training)
+    if cfg.beetlepalooza.go:
+        palooza_df = pl.read_json(cfg.beetlepalooza.annotations)
+        palooza_species = palooza_df.get_column("scientific_name").unique().to_list()
+        species.update(palooza_species)
+        logger.info("BeetlePalooza training species: %d unique", len(palooza_species))
+
+    logger.info("Total unique training species: %d", len(species))
+    return species
 
 def is_device_array(x: object) -> bool:
     if isinstance(x, (jax.Array, np.ndarray)):
@@ -405,14 +536,57 @@ def to_device(batch: dict[str, object], device=None) -> tuple:
 def train(cfg: Config):
     key = jax.random.key(seed=cfg.seed)
 
-    val_dl = make_dataset(
-        [dataclasses.replace(cfg.hawaii, split="val")],
-        seed=cfg.seed,
-        batch_size=cfg.batch_size,
-        n_workers=cfg.n_workers,
-        shuffle=False,
-        finite=True,
-    )
+    # Get training species for seen/unseen validation metrics
+    training_species = get_training_species(cfg)
+
+    imagenet_normalize = isinstance(cfg.model, btx.modeling.frozen.Frozen)
+
+    # Create separate validation dataloaders for each dataset
+    # Each entry: (dataloader, fixed_indices, total_samples, use_species_split)
+    val_datasets = {}
+
+    hawaii_val_cfg = dataclasses.replace(cfg.hawaii, split="val")
+    if hawaii_val_cfg.go:
+        hawaii_source = hawaii_val_cfg.dataset(hawaii_val_cfg)
+        if len(hawaii_source) > 0:
+            hawaii_total = len(hawaii_source)
+            fixed_rng = np.random.default_rng(seed=cfg.seed)
+            hawaii_fixed_indices = fixed_rng.choice(
+                hawaii_total, size=min(cfg.n_val_fixed, hawaii_total), replace=False
+            )
+            hawaii_val_dl = make_dataset(
+                [hawaii_val_cfg],
+                seed=cfg.seed,
+                batch_size=cfg.batch_size,
+                n_workers=cfg.n_workers,
+                shuffle=False,
+                finite=True,
+                imagenet_normalize=imagenet_normalize,
+            )
+            val_datasets["val/hawaii"] = (hawaii_val_dl, hawaii_fixed_indices, hawaii_total, False)
+            logger.info("Hawaii validation: %d samples, fixed indices: %s", hawaii_total, hawaii_fixed_indices)
+
+    biorepo_val_cfg = dataclasses.replace(cfg.biorepo, split="val")
+    if biorepo_val_cfg.go:
+        biorepo_source = biorepo_val_cfg.dataset(biorepo_val_cfg)
+        if len(biorepo_source) > 0:
+            biorepo_total = len(biorepo_source)
+            fixed_rng = np.random.default_rng(seed=cfg.seed)
+            biorepo_fixed_indices = fixed_rng.choice(
+                biorepo_total, size=min(cfg.n_val_fixed, biorepo_total), replace=False
+            )
+            biorepo_val_dl = make_dataset(
+                [biorepo_val_cfg],
+                seed=cfg.seed,
+                batch_size=cfg.batch_size,
+                n_workers=cfg.n_workers,
+                shuffle=False,
+                finite=True,
+                imagenet_normalize=imagenet_normalize,
+            )
+            val_datasets["val/biorepo"] = (biorepo_val_dl, biorepo_fixed_indices, biorepo_total, True)
+            logger.info("BioRepo validation: %d samples, fixed indices: %s", biorepo_total, biorepo_fixed_indices)
+
 
     train_cfgs = [
         dataclasses.replace(cfg.hawaii, split="train"),
@@ -426,6 +600,7 @@ def train(cfg: Config):
         n_workers=cfg.n_workers,
         shuffle=True,
         finite=False,
+        imagenet_normalize=imagenet_normalize,
     )
 
     model = btx.modeling.make(cfg.model, key)
@@ -457,7 +632,7 @@ def train(cfg: Config):
         model, state, aux = step_model(model, optim, state, batch, filter_spec)
 
         if step % cfg.save_every == 0:
-            beetle_id, img = plot_preds(batch, metadata, aux.preds)
+            beetle_id, img = plot_preds(batch, metadata, aux.preds, 0) # since batch is shuffled, choose elem 0
             metrics = {
                 f"train/{key}": jnp.nanmean(value).item()
                 for key, value in aux.metrics().items()
@@ -472,9 +647,15 @@ def train(cfg: Config):
             logger.info("Step: %d %s", step, metrics)
 
         if step % cfg.val_every == 0:
-            metrics = validate(cfg, model, val_dl, filter_spec)
-            run.log(metrics, step=step)
-            logger.info("Validation: %d %s", step, metrics)
+            all_val_metrics = {}
+            for prefix, (val_dl, fixed_indices, val_total_samples, use_species_split) in val_datasets.items():
+                species_set = training_species if use_species_split else None
+                metrics = validate(
+                    cfg, model, val_dl, filter_spec, fixed_indices, val_total_samples, prefix,
+                    training_species=species_set)
+                all_val_metrics.update(metrics)
+            run.log(all_val_metrics, step=step)
+            logger.info("Validation: %d %s", step, all_val_metrics)
 
         if step >= cfg.n_steps:
             break
