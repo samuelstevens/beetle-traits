@@ -17,6 +17,7 @@ def _():
 
     import btx
     import btx.data.augment
+
     return Image, btx, copy, grain, mo, np, pathlib, plt
 
 
@@ -121,11 +122,33 @@ def _(Image, btx, pathlib):
             samples.append(sample)
         return samples
 
+    def get_biorepo_samples(limit: int = 6):
+        br_cfg = btx.data.BioRepoConfig(split="train")
+        try:
+            ds = br_cfg.dataset(br_cfg)
+        except (AssertionError, FileNotFoundError, NotImplementedError) as err:
+            print(err)
+            return []
+
+        samples = []
+        for idx in range(len(ds)):
+            if len(samples) >= limit:
+                break
+            try:
+                sample = dict(ds[idx])
+                with Image.open(sample["img_fpath"]) as fd:
+                    sample["img"] = fd.convert("RGB")
+            except (AssertionError, FileNotFoundError, OSError):
+                continue
+            samples.append(sample)
+        return samples
+
     orig_sample = get_orig_sample()
     beetlepalooza_samples = get_beetlepalooza_samples()
     hawaii_samples = get_hawaii_samples()
+    biorepo_samples = get_biorepo_samples()
     orig_sample
-    return beetlepalooza_samples, hawaii_samples, orig_sample
+    return beetlepalooza_samples, biorepo_samples, hawaii_samples, orig_sample
 
 
 @app.cell
@@ -244,7 +267,7 @@ def _(beetlepalooza_samples, btx, copy, np, plt):
 
 
 @app.cell
-def _(beetlepalooza_samples, btx, copy, hawaii_samples, np, plt):
+def _(beetlepalooza_samples, biorepo_samples, btx, copy, hawaii_samples, np, plt):
     def make_crop_presets(
         *,
         target_scale_min: float,
@@ -330,6 +353,11 @@ def _(beetlepalooza_samples, btx, copy, hawaii_samples, np, plt):
         target_ratio_min=0.9,
         target_ratio_max=1.111,
     )
+    biorepo_presets = make_crop_presets(
+        target_scale_min=default_cfg.crop_scale_min,
+        target_ratio_min=default_cfg.crop_ratio_min,
+        target_ratio_max=default_cfg.crop_ratio_max,
+    )
 
     fig_hawaii = show_crop_sweep(
         hawaii_samples,
@@ -341,8 +369,14 @@ def _(beetlepalooza_samples, btx, copy, hawaii_samples, np, plt):
         beetlepalooza_presets,
         title="BeetlePalooza Crop Sweep",
     )
+    fig_biorepo = show_crop_sweep(
+        biorepo_samples,
+        biorepo_presets,
+        title="BioRepo Crop Sweep",
+    )
     fig_hawaii
     fig_beetlepalooza
+    fig_biorepo
     return
 
 
@@ -410,12 +444,15 @@ def _(btx, grain, mo, np, pathlib, plt):
         include_polylines=False,
         hf_root=pathlib.Path("/fs/ess/PAS2136/samuelstevens/datasets/hawaii-beetles"),
     )
+    biorepo_cfg = btx.data.BioRepoConfig(split="train")
 
     alphas = np.linspace(0.0, 1.0, 11)
     beetle_oob = []
     hawaii_oob = []
+    biorepo_oob = []
     n_beetle = 0
     n_hawaii = 0
+    n_biorepo = 0
 
     for _, alpha in mo.status.progress_bar(
         enumerate(alphas), total=len(alphas), title="OOB sweep over alphas"
@@ -436,8 +473,16 @@ def _(btx, grain, mo, np, pathlib, plt):
             n_samples=128,
             use_resize_baseline=use_resize_baseline,
         )
+        biorepo_mean, n_biorepo = mean_oob_for_cfg(
+            biorepo_cfg,
+            aug_cfg,
+            seed=17,
+            n_samples=128,
+            use_resize_baseline=use_resize_baseline,
+        )
         beetle_oob.append(beetle_mean)
         hawaii_oob.append(hawaii_mean)
+        biorepo_oob.append(biorepo_mean)
 
     fig_oob, ax_oob = plt.subplots(figsize=(9, 5), layout="constrained")
     ax_oob.scatter(
@@ -456,6 +501,14 @@ def _(btx, grain, mo, np, pathlib, plt):
         label=f"Hawaii (n={n_hawaii})",
     )
     ax_oob.plot(alphas, hawaii_oob, color="tab:blue", linewidth=2)
+    ax_oob.scatter(
+        alphas,
+        biorepo_oob,
+        color="tab:green",
+        s=36,
+        label=f"BioRepo (n={n_biorepo})",
+    )
+    ax_oob.plot(alphas, biorepo_oob, color="tab:green", linewidth=2)
     ax_oob.set_xlabel("Augmentation Level Alpha (0=Resize baseline, 1=target params)")
     ax_oob.set_ylabel("Mean OOB Points Fraction")
     ax_oob.set_title("OOB Fraction vs Crop Augmentation Level")

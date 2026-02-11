@@ -83,7 +83,6 @@ def test_get_transforms_can_disable_normalization():
 
 def test_get_augment_for_dataset_returns_dataset_specific_configs():
     cfg = train.Config(
-        augment=augment.AugmentConfig(crop_scale_min=0.6),
         aug_hawaii=augment.AugmentConfig(crop_scale_min=0.5),
         aug_beetlepalooza=augment.AugmentConfig(crop_scale_min=0.8),
         aug_biorepo=augment.AugmentConfig(crop_scale_min=0.9),

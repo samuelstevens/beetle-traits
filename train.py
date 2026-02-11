@@ -40,8 +40,6 @@ class Config:
     """BeetlePalooza data config."""
     biorepo: btx.data.BioRepoConfig = btx.data.BioRepoConfig()
     """BioRepo data config."""
-    augment: btx.data.AugmentConfig = btx.data.AugmentConfig()
-    """Default train/eval augmentation + normalization config."""
     aug_hawaii: btx.data.AugmentConfig = btx.data.AugmentConfig(
         crop_scale_min=0.9,
         crop_scale_max=1.0,
@@ -124,7 +122,8 @@ def get_aug_for_dataset(
         return train_cfg.aug_beetlepalooza
     if isinstance(dataset_cfg, btx.data.BioRepoConfig):
         return train_cfg.aug_biorepo
-    return train_cfg.augment
+    msg = f"No augment config for dataset type {type(dataset_cfg).__name__}"
+    raise TypeError(msg)
 
 
 @beartype.beartype
@@ -406,7 +405,7 @@ def validate(
     min_px_per_cm: float,
     fixed_indices: np.ndarray,
     val_total_samples: int,
-    prefix: str = "val",
+    prefix: str,
     training_species: set[str] | None = None,
 ):
     metrics = []
@@ -605,10 +604,11 @@ def train(cfg: Config):
         dataclasses.replace(cfg.biorepo, split="val"),
     ]
     val_cfgs = [c for c in val_cfgs if c.go]
+    # Only used when val_cfgs is non-empty (the validate loop is skipped otherwise).
     val_min_px_per_cm = (
         min(get_aug_for_dataset(cfg, c).min_px_per_cm for c in val_cfgs)
         if val_cfgs
-        else cfg.augment.min_px_per_cm
+        else 0.0
     )
 
     # Get training species for seen/unseen validation metrics
