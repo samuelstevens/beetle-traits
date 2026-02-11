@@ -706,6 +706,60 @@ def wsd_schedule(
         boundaries.append(n_steps)
 
     return optax.join_schedules(schedules, boundaries)
+def wsd_schedule(
+    peak_value: float,
+    total_steps: int,
+    warmup_steps: int = 0,
+    decay_steps: int = 0,
+    end_value: float = 0.0,
+) -> optax.Schedule:
+    """Warmup-Stable-Decay (WSD) learning rate schedule.
+
+    Args:
+        peak_value: Peak learning rate after warmup.
+        total_steps: Total number of training steps.
+        warmup_steps: Absolute warmup steps.
+        decay_steps: Absolute decay steps.
+        end_value: Final learning rate after decay.
+
+    Returns:
+        Optax schedule function.
+    """
+    assert warmup_steps >= 0, f"{warmup_steps=} must be >= 0"
+    assert decay_steps >= 0, f"{decay_steps=} must be >= 0"
+    stable_steps = total_steps - warmup_steps - decay_steps
+
+    assert stable_steps >= 0, (
+        f"Negative stable steps: {warmup_steps=} + {decay_steps=} > {total_steps=}"
+    )
+
+    segments: list[tuple[int, optax.Schedule]] = []
+    if warmup_steps > 0:
+        segments.append((
+            warmup_steps,
+            optax.linear_schedule(0.0, peak_value, warmup_steps),
+        ))
+    if stable_steps > 0:
+        segments.append((stable_steps, optax.constant_schedule(peak_value)))
+    if decay_steps > 0:
+        segments.append((
+            decay_steps,
+            optax.linear_schedule(peak_value, end_value, decay_steps),
+        ))
+
+    if not segments:
+        return optax.constant_schedule(peak_value)
+    if len(segments) == 1:
+        return segments[0][1]
+
+    schedules = [segment[1] for segment in segments]
+    boundaries = []
+    n_steps = 0
+    for n_segment_steps, _ in segments[:-1]:
+        n_steps += n_segment_steps
+        boundaries.append(n_steps)
+
+    return optax.join_schedules(schedules, boundaries)
 
 @beartype.beartype
 def is_device_array(x: object) -> bool:
