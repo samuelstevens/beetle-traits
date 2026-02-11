@@ -605,8 +605,10 @@ def train(cfg: Config):
         dataclasses.replace(cfg.biorepo, split="val"),
     ]
     val_cfgs = [c for c in val_cfgs if c.go]
-    val_min_px_per_cm = min(
-        get_aug_for_dataset(cfg, dataset_cfg).min_px_per_cm for dataset_cfg in val_cfgs
+    val_min_px_per_cm = (
+        min(get_aug_for_dataset(cfg, c).min_px_per_cm for c in val_cfgs)
+        if val_cfgs
+        else cfg.augment.min_px_per_cm
     )
 
     # Get training species for seen/unseen validation metrics
