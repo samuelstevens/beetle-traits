@@ -66,7 +66,6 @@ def _make_run(seed: int, lr: float, name: str, aug_cfg: dict) -> dict:
             "annotations": BEETLEPALOOZA_ANN_FPATH,
             "include_polylines": False,
         },
-        "augment": dict(aug_cfg),
         "aug_hawaii": dict(aug_cfg),
         "aug_beetlepalooza": dict(aug_cfg),
         "aug_biorepo": dict(aug_cfg),
