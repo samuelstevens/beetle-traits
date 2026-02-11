@@ -600,7 +600,11 @@ def to_device(batch: dict[str, object], device=None) -> tuple:
 @beartype.beartype
 def train(cfg: Config):
     key = jax.random.key(seed=cfg.seed)
-    val_cfgs = [dataclasses.replace(cfg.hawaii, split="val")]
+    val_cfgs = [
+        dataclasses.replace(cfg.hawaii, split="val"),
+        dataclasses.replace(cfg.biorepo, split="val"),
+    ]
+    val_cfgs = [c for c in val_cfgs if c.go]
     val_min_px_per_cm = min(
         get_aug_for_dataset(cfg, dataset_cfg).min_px_per_cm for dataset_cfg in val_cfgs
     )
