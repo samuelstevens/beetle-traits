@@ -134,6 +134,14 @@ class Config:
     learning_rate: float = 3e-4
     ckpt_dpath: pathlib.Path = pathlib.Path("./checkpoints")
     """Directory for checkpoints. Final checkpoint is saved to {ckpt_dpath}/{wandb_run_id}/model.eqx."""
+    schedule: tp.Literal["cosine", "wsd"] = "cosine"
+    """LR schedule: 'cosine' (warmup + cosine decay) or 'wsd' (warmup-stable-decay)."""
+    warmup_steps: int = 0
+    """Number of warmup steps for learning rate schedules."""
+    decay_steps: int = 0
+    """Number of decay steps for WSD."""
+    weight_decay: float = 0.05
+    """Weight decay."""
 
     wandb_project: str = "beetle-traits"
     slurm_acct: str = ""
@@ -604,6 +612,61 @@ def get_training_species(cfg: "Config") -> frozenset[str]:
     logger.info("Total unique training species: %d", len(species))
     return frozenset(species)
 
+def wsd_schedule(
+    peak_value: float,
+    total_steps: int,
+    warmup_steps: int = 0,
+    decay_steps: int = 0,
+    end_value: float = 0.0,
+) -> optax.Schedule:
+    """Warmup-Stable-Decay (WSD) learning rate schedule.
+
+    Args:
+        peak_value: Peak learning rate after warmup.
+        total_steps: Total number of training steps.
+        warmup_steps: Absolute warmup steps.
+        decay_steps: Absolute decay steps.
+        end_value: Final learning rate after decay.
+
+    Returns:
+        Optax schedule function.
+    """
+    assert warmup_steps >= 0, f"{warmup_steps=} must be >= 0"
+    assert decay_steps >= 0, f"{decay_steps=} must be >= 0"
+    stable_steps = total_steps - warmup_steps - decay_steps
+
+    assert stable_steps >= 0, (
+        f"Negative stable steps: {warmup_steps=} + {decay_steps=} > {total_steps=}"
+    )
+
+    segments: list[tuple[int, optax.Schedule]] = []
+    if warmup_steps > 0:
+        segments.append((
+            warmup_steps,
+            optax.linear_schedule(0.0, peak_value, warmup_steps),
+        ))
+    if stable_steps > 0:
+        segments.append((stable_steps, optax.constant_schedule(peak_value)))
+    if decay_steps > 0:
+        segments.append((
+            decay_steps,
+            optax.linear_schedule(peak_value, end_value, decay_steps),
+        ))
+
+    if not segments:
+        return optax.constant_schedule(peak_value)
+    if len(segments) == 1:
+        return segments[0][1]
+
+    schedules = [segment[1] for segment in segments]
+    boundaries = []
+    n_steps = 0
+    for n_segment_steps, _ in segments[:-1]:
+        n_steps += n_segment_steps
+        boundaries.append(n_steps)
+
+    return optax.join_schedules(schedules, boundaries)
+
 
 @beartype.beartype
 def train(cfg: Config):
@@ -640,6 +703,28 @@ def train(cfg: Config):
         cfg, train_dss, shuffle=True, finite=False, is_train=True
     )
 
+    # Set up learning rate scheduler
+    if cfg.schedule == "wsd":
+        schedule = wsd_schedule(
+            peak_value=cfg.learning_rate,
+            total_steps=cfg.n_steps,
+            warmup_steps=cfg.warmup_steps,
+            decay_steps=cfg.decay_steps,
+            end_value=0.0,
+        )
+    elif cfg.schedule == "cosine":
+        schedule = optax.warmup_cosine_decay_schedule(
+            init_value=0.0,
+            peak_value=cfg.learning_rate,
+            warmup_steps=cfg.warmup_steps,
+            decay_steps=cfg.n_steps,
+            end_value=0.0,
+        )
+    else:
+        tp.assert_never(cfg.schedule)
+
+    optim = optax.adamw(learning_rate=schedule, weight_decay=cfg.weight_decay)
+    
     model = btx.modeling.make(cfg.model, key)
 
     # Freeze ViT arrays, optimize non-ViT arrays.
@@ -647,7 +732,7 @@ def train(cfg: Config):
 
     # Optimize only the differentiable part of the model.
     diff_model, _ = eqx.partition(model, filter_spec)
-    optim = optax.adamw(learning_rate=cfg.learning_rate)
+
     state = optim.init(diff_model)
     obj_cfg = cfg.objective
     obj = obj_cfg.get_obj()
