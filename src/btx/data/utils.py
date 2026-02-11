@@ -46,39 +46,6 @@ class DecodeRGB(grain.transforms.Map):
 
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
-class Resize(grain.transforms.Map):
-    size: int = 256
-    imagenet_normalize: bool = False
-    """Apply ImageNet mean/std normalization (for pretrained DINOv2/v3 ViTs)."""
-
-    def map(self, sample: dict[str, object]) -> dict[str, object]:
-        img = sample["img"]
-        orig_w, orig_h = img.size
-
-        img = np.array(img.resize((self.size, self.size)))
-        img = img.astype(np.float32) / 255.0
-        if self.imagenet_normalize:
-            mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-            std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-            img = (img - mean) / std
-        sample["img"] = img
-
-        # Rescale the measurements according to the new size
-        scale_x = self.size / orig_w
-        scale_y = self.size / orig_h
-
-        points = sample["points_px"].copy()
-        points[:, :, 0] *= scale_x
-        points[:, :, 1] *= scale_y
-        sample["tgt"] = points
-
-        sample["scale"] = np.array([scale_x, scale_y])
-
-        return sample
-
-
-@beartype.beartype
-@dataclasses.dataclass(frozen=True)
 class GaussianHeatmap(grain.transforms.Map):
     size: int = 256
     """Image size in pixels."""
