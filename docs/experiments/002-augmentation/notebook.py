@@ -253,7 +253,11 @@ def _(mo, pl, steps_df):
 
 
 @app.cell
-def _(np, plt, steps_df):
+def _(np, pl, plt, steps_df):
+    from pathlib import Path as _Path
+
+    _out_dpath = _Path("docs/experiments/002-augmentation/artifacts")
+    _out_dpath.mkdir(parents=True, exist_ok=True)
     fig, (ax_train, ax_val, ax_gap) = plt.subplots(
         3,
         1,
@@ -311,6 +315,8 @@ def _(np, plt, steps_df):
             y_ema[i] = beta * y_ema[i - 1] + (1.0 - beta) * y[i]
         return y_ema
 
+    _loss_rows: list[dict[str, object]] = []
+
     def _plot_loss_metric(ax, metric: str, title: str) -> bool:
         if metric not in steps_df.columns:
             ax.set_title(f"{title} (no {metric} column)")
@@ -333,9 +339,29 @@ def _(np, plt, steps_df):
             lr = first_row.get("learning_rate")
             color = _get_lr_color(lr)
             style = aug_style_map.get(condition, "-.")
-            y_vals = run_df.get_column(metric).to_numpy()
+            y_raw = run_df.get_column(metric).to_numpy()
+            y_vals = y_raw
+            _smoothed = False
             if metric.startswith("train_"):
                 y_vals = _ema_np(y_vals, beta=ema_beta)
+                _smoothed = True
+
+            for _step, _y_raw, _y_plot in zip(
+                run_df.get_column("step").to_numpy(),
+                y_raw,
+                y_vals,
+                strict=False,
+            ):
+                _loss_rows.append({
+                    "panel": metric,
+                    "run_id": run_id,
+                    "condition": condition,
+                    "learning_rate": lr,
+                    "step": int(_step),
+                    "value_raw": float(_y_raw),
+                    "value_plot": float(_y_plot),
+                    "smoothed": _smoothed,
+                })
 
             ax.plot(
                 run_df.get_column("step").to_numpy(),
@@ -387,7 +413,25 @@ def _(np, plt, steps_df):
                 run_df.get_column(val_metric).to_numpy()
                 - run_df.get_column(train_metric).to_numpy()
             )
+            gap_raw = gap_vals.copy()
             gap_vals = _ema_np(gap_vals, beta=ema_beta)
+
+            for _step, _gap_raw, _gap_plot in zip(
+                run_df.get_column("step").to_numpy(),
+                gap_raw,
+                gap_vals,
+                strict=False,
+            ):
+                _loss_rows.append({
+                    "panel": "val_minus_train",
+                    "run_id": run_id,
+                    "condition": condition,
+                    "learning_rate": lr,
+                    "step": int(_step),
+                    "value_raw": float(_gap_raw),
+                    "value_plot": float(_gap_plot),
+                    "smoothed": True,
+                })
 
             ax.plot(
                 run_df.get_column("step").to_numpy(),
@@ -468,12 +512,35 @@ def _(np, plt, steps_df):
             lr_cbar.set_ticklabels([f"{lr:g}" for lr in lr_tick_vals])
             lr_cbar.set_label("Learning rate")
 
+    if _loss_rows:
+        _loss_export_df = pl.DataFrame(_loss_rows)
+    else:
+        _loss_export_df = pl.DataFrame(
+            schema={
+                "panel": pl.String,
+                "run_id": pl.String,
+                "condition": pl.String,
+                "learning_rate": pl.Float64,
+                "step": pl.Int64,
+                "value_raw": pl.Float64,
+                "value_plot": pl.Float64,
+                "smoothed": pl.Boolean,
+            }
+        )
+    _loss_export_df.write_csv(_out_dpath / "loss_vs_step.csv")
+    fig.savefig(_out_dpath / "loss_vs_step.png", dpi=200, bbox_inches="tight")
+
     fig
     return
 
 
 @app.cell
 def _(np, pl, plt, steps_df):
+    from pathlib import Path as _Path
+
+    _out_dpath = _Path("docs/experiments/002-augmentation/artifacts")
+    _out_dpath.mkdir(parents=True, exist_ok=True)
+
     _lr_fig, _lr_ax = plt.subplots(
         nrows=1,
         ncols=1,
@@ -488,6 +555,16 @@ def _(np, pl, plt, steps_df):
     }
 
     _lr_required_cols = {"run_id", "learning_rate", "step", "val_loss"}
+    _lr_export_df = pl.DataFrame(
+        schema={
+            "run_id": pl.String,
+            "name": pl.String,
+            "condition": pl.String,
+            "learning_rate": pl.Float64,
+            "final_step": pl.Int64,
+            "final_val_loss": pl.Float64,
+        }
+    )
     if not _lr_required_cols.issubset(steps_df.columns):
         _lr_ax.set_title("LR vs final val loss (missing required columns)")
         _lr_ax.set_xlabel("Learning rate")
@@ -565,13 +642,30 @@ def _(np, pl, plt, steps_df):
             _lr_sm = plt.cm.ScalarMappable(norm=_lr_norm, cmap=_lr_cmap)
             _lr_sm.set_array([])
             _lr_fig.colorbar(_lr_sm, ax=_lr_ax, label="Final step")
+            _lr_export_df = _lr_plot_df.select([
+                "run_id",
+                "name",
+                "condition",
+                "learning_rate",
+                "final_step",
+                "final_val_loss",
+            ])
 
+    _lr_export_df.write_csv(_out_dpath / "lr_vs_final_val_loss.csv")
+    _lr_fig.savefig(
+        _out_dpath / "lr_vs_final_val_loss.png", dpi=200, bbox_inches="tight"
+    )
     _lr_fig
     return
 
 
 @app.cell
 def _(np, pl, plt, steps_df):
+    from pathlib import Path as _Path
+
+    _out_dpath = _Path("docs/experiments/002-augmentation/artifacts")
+    _out_dpath.mkdir(parents=True, exist_ok=True)
+
     _speed_fig, _speed_ax = plt.subplots(
         nrows=1,
         ncols=1,
@@ -584,6 +678,15 @@ def _(np, pl, plt, steps_df):
         "norm-only": "#ff7f0e",
         "full-aug": "#2ca02c",
     }
+    _speed_export_df = pl.DataFrame(
+        schema={
+            "condition": pl.String,
+            "n_workers": pl.Int64,
+            "step": pl.Int64,
+            "steps_per_sec_mean": pl.Float64,
+            "steps_per_sec_std": pl.Float64,
+        }
+    )
 
     if "_runtime" not in steps_df.columns:
         _speed_ax.set_title("Steps/sec vs step (missing _runtime)")
@@ -651,6 +754,13 @@ def _(np, pl, plt, steps_df):
                     )
                     .sort(["condition", "n_workers", "step"])
                 )
+                _speed_export_df = _speed_agg_df.select([
+                    "condition",
+                    "n_workers",
+                    "step",
+                    "steps_per_sec_mean",
+                    "steps_per_sec_std",
+                ])
                 _speed_workers_vals = (
                     _speed_agg_df
                     .select("n_workers")
@@ -751,12 +861,21 @@ def _(np, pl, plt, steps_df):
                         frameon=False,
                     )
 
+    _speed_export_df.write_csv(_out_dpath / "steps_per_sec_vs_step.csv")
+    _speed_fig.savefig(
+        _out_dpath / "steps_per_sec_vs_step.png", dpi=200, bbox_inches="tight"
+    )
     _speed_fig
     return
 
 
 @app.cell
-def _(np, plt, steps_df):
+def _(np, pl, plt, steps_df):
+    from pathlib import Path as _Path
+
+    _out_dpath = _Path("docs/experiments/002-augmentation/artifacts")
+    _out_dpath.mkdir(parents=True, exist_ok=True)
+
     _cm_fig, (_cm_ax_train, _cm_ax_val, _cm_ax_gap) = plt.subplots(
         nrows=3,
         ncols=1,
@@ -816,6 +935,8 @@ def _(np, plt, steps_df):
             )
         return _cm_y_ema
 
+    _cm_rows: list[dict[str, object]] = []
+
     def _plot_cm_metric(_cm_ax, _cm_metric: str, _cm_title: str) -> bool:
         if _cm_metric not in steps_df.columns:
             _cm_cols = [col for col in steps_df.columns if col.endswith("_cm")]
@@ -851,9 +972,29 @@ def _(np, plt, steps_df):
             _cm_lr = _cm_first_row.get("learning_rate")
             _cm_color = _get_cm_lr_color(_cm_lr)
             _cm_style = _cm_aug_style_map.get(_cm_condition, "-.")
-            _cm_y_vals = _cm_run_df.get_column(_cm_metric).to_numpy()
+            _cm_y_raw = _cm_run_df.get_column(_cm_metric).to_numpy()
+            _cm_y_vals = _cm_y_raw
+            _cm_smoothed = False
             if _cm_metric.startswith("train_"):
                 _cm_y_vals = _ema_cm_np(_cm_y_vals, _cm_beta=_cm_ema_beta)
+                _cm_smoothed = True
+
+            for _cm_step, _cm_raw, _cm_plot in zip(
+                _cm_run_df.get_column("step").to_numpy(),
+                _cm_y_raw,
+                _cm_y_vals,
+                strict=False,
+            ):
+                _cm_rows.append({
+                    "panel": _cm_metric,
+                    "run_id": _cm_run_id,
+                    "condition": _cm_condition,
+                    "learning_rate": _cm_lr,
+                    "step": int(_cm_step),
+                    "value_raw": float(_cm_raw),
+                    "value_plot": float(_cm_plot),
+                    "smoothed": _cm_smoothed,
+                })
             _cm_ax.plot(
                 _cm_run_df.get_column("step").to_numpy(),
                 _cm_y_vals,
@@ -919,7 +1060,25 @@ def _(np, plt, steps_df):
                 _cm_gap_run_df.get_column(_cm_val_metric).to_numpy()
                 - _cm_gap_run_df.get_column(_cm_train_metric).to_numpy()
             )
+            _cm_gap_raw = _cm_gap_vals.copy()
             _cm_gap_vals = _ema_cm_np(_cm_gap_vals, _cm_beta=_cm_ema_beta)
+
+            for _cm_step, _cm_raw, _cm_plot in zip(
+                _cm_gap_run_df.get_column("step").to_numpy(),
+                _cm_gap_raw,
+                _cm_gap_vals,
+                strict=False,
+            ):
+                _cm_rows.append({
+                    "panel": "val_minus_train_cm",
+                    "run_id": _cm_gap_run_id,
+                    "condition": _cm_gap_condition,
+                    "learning_rate": _cm_gap_lr,
+                    "step": int(_cm_step),
+                    "value_raw": float(_cm_raw),
+                    "value_plot": float(_cm_plot),
+                    "smoothed": True,
+                })
 
             _cm_gap_ax.plot(
                 _cm_gap_run_df.get_column("step").to_numpy(),
@@ -999,6 +1158,24 @@ def _(np, plt, steps_df):
             _cm_lr_cbar.set_ticks(np.log10(_cm_lr_tick_vals))
             _cm_lr_cbar.set_ticklabels([f"{_cm_lr:g}" for _cm_lr in _cm_lr_tick_vals])
             _cm_lr_cbar.set_label("Learning rate")
+
+    if _cm_rows:
+        _cm_export_df = pl.DataFrame(_cm_rows)
+    else:
+        _cm_export_df = pl.DataFrame(
+            schema={
+                "panel": pl.String,
+                "run_id": pl.String,
+                "condition": pl.String,
+                "learning_rate": pl.Float64,
+                "step": pl.Int64,
+                "value_raw": pl.Float64,
+                "value_plot": pl.Float64,
+                "smoothed": pl.Boolean,
+            }
+        )
+    _cm_export_df.write_csv(_out_dpath / "length_err_vs_step.csv")
+    _cm_fig.savefig(_out_dpath / "length_err_vs_step.png", dpi=200, bbox_inches="tight")
 
     _cm_fig
     return
