@@ -191,7 +191,8 @@ class Dataset(utils.Dataset):
 
         # Convert scalebar struct to list
         scalebar_struct = row.get("scalebar_px", None)
-        if scalebar_struct is None:
+        scalebar_valid = scalebar_struct is not None
+        if not scalebar_valid:
             self.logger.error(
                 "Image %s beetle %d has no scalebar struct in row; using default.",
                 row.get("group_img_rel_path", "<unknown>"),
@@ -244,6 +245,7 @@ class Dataset(utils.Dataset):
             img_fpath=str(fpath),
             points_px=np.array(elytra_width_px + elytra_length_px).reshape(2, 2, 2),
             scalebar_px=np.array(scalebar_px).reshape(2, 2),
+            scalebar_valid=np.bool_(scalebar_valid),
             loss_mask=loss_mask,
             beetle_id=row["individual_id"],
             beetle_position=row["beetle_position"],

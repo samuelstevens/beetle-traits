@@ -275,7 +275,8 @@ class Dataset(utils.Dataset):
             msg = f"Image {row['group_img_rel_path']} beetle {row['beetle_position']} has no elytra length."
             self.logger.error(msg)
             elytra_length_px = [0.0, 0.0, 0.0, 0.0]
-        if scalebar_px is None:
+        scalebar_valid = scalebar_px is not None
+        if not scalebar_valid:
             msg = f"Image {row['group_img_rel_path']} beetle {row['beetle_position']} has no scalebar."
             self.logger.error(msg)
             scalebar_px = [0.0, 0.0, 1.0, 1.0]
@@ -290,6 +291,7 @@ class Dataset(utils.Dataset):
             img_fpath=str(fpath),
             points_px=np.array(elytra_width_px + elytra_length_px).reshape(2, 2, 2),
             scalebar_px=np.array(scalebar_px).reshape(2, 2),
+            scalebar_valid=np.bool_(scalebar_valid),
             loss_mask=loss_mask,
             beetle_id=row["individual_id"],
             beetle_position=row["beetle_position"],
