@@ -1,19 +1,28 @@
 import abc
-import dataclasses
 import typing as tp
 
 import beartype
 import grain
 import numpy as np
 from jaxtyping import Float, jaxtyped
-from PIL import Image
 
 
 @beartype.beartype
 class Config(abc.ABC):
     @property
     @abc.abstractmethod
-    def dataset(self): ...
+    def key(self) -> str: ...
+
+    @property
+    @abc.abstractmethod
+    def dataset(self) -> type["Dataset"]: ...
+
+
+@beartype.beartype
+class Dataset(grain.sources.RandomAccessDataSource, abc.ABC):
+    @property
+    @abc.abstractmethod
+    def cfg(self) -> Config: ...
 
 
 @jaxtyped(typechecker=beartype.beartype)
@@ -32,55 +41,3 @@ class Sample(tp.TypedDict):
     beetle_position: int
     group_img_basename: str
     scientific_name: str
-
-
-@beartype.beartype
-@dataclasses.dataclass(frozen=True)
-class DecodeRGB(grain.transforms.Map):
-    def map(self, sample: Sample) -> Sample:
-        # Heavy I/O lives in a transform so workers can parallelize it
-        with Image.open(sample["img_fpath"]) as im:
-            sample["img"] = im.convert("RGB")
-        return sample
-
-
-@beartype.beartype
-@dataclasses.dataclass(frozen=True)
-class GaussianHeatmap(grain.transforms.Map):
-    size: int = 256
-    """Image size in pixels."""
-    sigma: float = 3.0
-    """Standard deviation in pixels."""
-
-    def map(self, sample: dict[str, object]) -> dict[str, object]:
-        """Reads the 'tgt' key and adds a 'heatmap': Float[np.ndarray, "height width"] key-value pair to the sample dict.
-
-        The heatmap should be a Gaussian/normal distribution centered on the tgt keypoint, with a peak of 1.0 and a std dev of self.sigma.
-        """
-
-
-@beartype.beartype
-@dataclasses.dataclass(frozen=True)
-class Normalize(grain.transforms.Map):
-    mean: tuple[float, float, float] = (0.485, 0.456, 0.406)
-    std: tuple[float, float, float] = (0.229, 0.224, 0.225)
-
-    def map(self, sample: dict[str, object]) -> dict[str, object]:
-        img = sample["img"]
-        msg = f"Expected ndarray image, got {type(img)}"
-        assert isinstance(img, np.ndarray), msg
-        assert img.ndim == 3 and img.shape[-1] == 3, (
-            f"Expected HWC image with 3 channels, got {img.shape}"
-        )
-
-        mean = np.asarray(self.mean, dtype=np.float32)
-        std = np.asarray(self.std, dtype=np.float32)
-        assert mean.shape == (3,), f"Expected mean shape (3,), got {mean.shape}"
-        assert std.shape == (3,), f"Expected std shape (3,), got {std.shape}"
-        assert np.all(np.isfinite(mean)), "mean must be finite"
-        assert np.all(np.isfinite(std)), "std must be finite"
-        assert np.all(std > 0.0), "std must be positive"
-
-        img_f32 = img.astype(np.float32, copy=False)
-        sample["img"] = (img_f32 - mean[None, None, :]) / std[None, None, :]
-        return sample

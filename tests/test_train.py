@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 
 import btx.data
-from btx.data import augment
+from btx.data import transforms as augment
 
 train_fpath = pathlib.Path(__file__).resolve().parents[1] / "train.py"
 spec = importlib.util.spec_from_file_location("train_script", train_fpath)
@@ -31,8 +31,8 @@ def _partition_model(model: eqx.Module):
 def test_get_transforms_orders_finalize_before_normalize():
     cfg = augment.AugmentConfig()
 
-    train_tfms = train.get_transforms(cfg, train_split=True)
-    eval_tfms = train.get_transforms(cfg, train_split=False)
+    train_tfms = augment.make_transforms(cfg, is_train=True)
+    eval_tfms = augment.make_transforms(cfg, is_train=False)
 
     train_names = [t.__class__.__name__ for t in train_tfms]
     eval_names = [t.__class__.__name__ for t in eval_tfms]
@@ -42,7 +42,7 @@ def test_get_transforms_orders_finalize_before_normalize():
         "InitAugState",
         "RandomResizedCrop",
         "RandomFlip",
-        "RandomRotation90",
+        "RandomRotation",
         "ColorJitter",
         "FinalizeTargets",
         "Normalize",
@@ -58,8 +58,8 @@ def test_get_transforms_orders_finalize_before_normalize():
 
 def test_get_transforms_can_disable_normalization():
     cfg = augment.AugmentConfig(normalize=False)
-    train_tfms = train.get_transforms(cfg, train_split=True)
-    eval_tfms = train.get_transforms(cfg, train_split=False)
+    train_tfms = augment.make_transforms(cfg, is_train=True)
+    eval_tfms = augment.make_transforms(cfg, is_train=False)
 
     train_names = [t.__class__.__name__ for t in train_tfms]
     eval_names = [t.__class__.__name__ for t in eval_tfms]
@@ -69,7 +69,7 @@ def test_get_transforms_can_disable_normalization():
         "InitAugState",
         "RandomResizedCrop",
         "RandomFlip",
-        "RandomRotation90",
+        "RandomRotation",
         "ColorJitter",
         "FinalizeTargets",
     ]
@@ -111,7 +111,7 @@ def test_loss_and_aux_masks_cm_metrics_and_reports_oob_points_frac():
         "oob_points_frac": jnp.array([0.25], dtype=jnp.float32),
     }
 
-    loss, aux = train.loss_and_aux(diff_model, static_model, batch, min_px_per_cm=1e-6)
+    loss, aux = train.loss_and_aux(diff_model, static_model, batch)
 
     assert float(loss) == 0.0
     assert np.isnan(np.asarray(aux.point_err_cm)).all()
@@ -143,6 +143,101 @@ def test_loss_and_aux_uses_order_invariant_endpoint_matching():
         "oob_points_frac": jnp.array([0.0], dtype=jnp.float32),
     }
 
-    _, aux = train.loss_and_aux(diff_model, static_model, batch, min_px_per_cm=1e-6)
+    _, aux = train.loss_and_aux(diff_model, static_model, batch)
     np.testing.assert_allclose(np.asarray(aux.point_err_cm), 0.0, atol=1e-7)
     np.testing.assert_allclose(np.asarray(aux.line_err_cm), 0.0, atol=1e-7)
+
+
+def test_loss_and_aux_weights_global_loss_by_active_targets():
+    model = ConstantModel(pred_l22=jnp.zeros((2, 2, 2), dtype=jnp.float32))
+    diff_model, static_model = _partition_model(model)
+
+    tgt = jnp.zeros((2, 2, 2, 2), dtype=jnp.float32)
+    tgt = tgt.at[0].set(1.0)
+    tgt = tgt.at[1, 0].set(2.0)
+    batch = {
+        "img": jnp.zeros((2, 256, 256, 3), dtype=jnp.float32),
+        "tgt": tgt,
+        "points_px": jnp.zeros((2, 2, 2, 2), dtype=jnp.float32),
+        "scalebar_px": jnp.array(
+            [[[0.0, 0.0], [10.0, 0.0]], [[0.0, 0.0], [10.0, 0.0]]],
+            dtype=jnp.float32,
+        ),
+        "loss_mask": jnp.array([[1.0, 1.0], [1.0, 0.0]], dtype=jnp.float32),
+        "metric_mask_cm": jnp.zeros((2,), dtype=jnp.float32),
+        "t_orig_from_aug": jnp.tile(
+            jnp.eye(3, dtype=jnp.float32)[None, :, :], (2, 1, 1)
+        ),
+        "oob_points_frac": jnp.array([0.0, 0.0], dtype=jnp.float32),
+    }
+
+    loss, aux = train.loss_and_aux(diff_model, static_model, batch)
+
+    np.testing.assert_allclose(np.asarray(aux.sample_loss), np.array([1.0, 4.0]))
+    np.testing.assert_allclose(np.asarray(loss), np.array(2.0))
+
+
+def test_loss_and_aux_marks_sample_loss_nan_when_sample_is_fully_masked():
+    model = ConstantModel(pred_l22=jnp.zeros((2, 2, 2), dtype=jnp.float32))
+    diff_model, static_model = _partition_model(model)
+
+    tgt = jnp.zeros((2, 2, 2, 2), dtype=jnp.float32)
+    tgt = tgt.at[0].set(1.0)
+    tgt = tgt.at[1].set(5.0)
+    batch = {
+        "img": jnp.zeros((2, 256, 256, 3), dtype=jnp.float32),
+        "tgt": tgt,
+        "points_px": jnp.zeros((2, 2, 2, 2), dtype=jnp.float32),
+        "scalebar_px": jnp.array(
+            [[[0.0, 0.0], [10.0, 0.0]], [[0.0, 0.0], [10.0, 0.0]]],
+            dtype=jnp.float32,
+        ),
+        "loss_mask": jnp.array([[1.0, 1.0], [0.0, 0.0]], dtype=jnp.float32),
+        "metric_mask_cm": jnp.zeros((2,), dtype=jnp.float32),
+        "t_orig_from_aug": jnp.tile(
+            jnp.eye(3, dtype=jnp.float32)[None, :, :], (2, 1, 1)
+        ),
+        "oob_points_frac": jnp.array([0.0, 0.0], dtype=jnp.float32),
+    }
+
+    loss, aux = train.loss_and_aux(diff_model, static_model, batch)
+
+    sample_loss = np.asarray(aux.sample_loss)
+    np.testing.assert_allclose(sample_loss[0], np.array(1.0))
+    assert np.isnan(sample_loss[1])
+    np.testing.assert_allclose(np.asarray(loss), np.array(1.0))
+
+
+def test_loss_and_aux_returns_zero_loss_and_zero_grads_when_all_targets_masked():
+    model = ConstantModel(pred_l22=jnp.ones((2, 2, 2), dtype=jnp.float32))
+    diff_model, static_model = _partition_model(model)
+
+    batch = {
+        "img": jnp.zeros((2, 256, 256, 3), dtype=jnp.float32),
+        "tgt": jnp.ones((2, 2, 2, 2), dtype=jnp.float32),
+        "points_px": jnp.zeros((2, 2, 2, 2), dtype=jnp.float32),
+        "scalebar_px": jnp.array(
+            [[[0.0, 0.0], [10.0, 0.0]], [[0.0, 0.0], [10.0, 0.0]]],
+            dtype=jnp.float32,
+        ),
+        "loss_mask": jnp.zeros((2, 2), dtype=jnp.float32),
+        "metric_mask_cm": jnp.zeros((2,), dtype=jnp.float32),
+        "t_orig_from_aug": jnp.tile(
+            jnp.eye(3, dtype=jnp.float32)[None, :, :], (2, 1, 1)
+        ),
+        "oob_points_frac": jnp.array([0.0, 0.0], dtype=jnp.float32),
+    }
+
+    def loss_only(diff_model, static_model):
+        loss, _ = train.loss_and_aux(diff_model, static_model, batch)
+        return loss
+
+    loss_grad_fn = eqx.filter_value_and_grad(loss_only)
+    loss, grads = loss_grad_fn(diff_model, static_model)
+    _, aux = train.loss_and_aux(diff_model, static_model, batch)
+
+    np.testing.assert_allclose(np.asarray(loss), np.array(0.0))
+    grad = np.asarray(grads.pred_l22)
+    assert np.isfinite(grad).all()
+    np.testing.assert_allclose(grad, 0.0)
+    assert np.isnan(np.asarray(aux.sample_loss)).all()

@@ -5,7 +5,7 @@ from hypothesis import strategies as st
 from hypothesis.extra import numpy as hnp
 from PIL import Image
 
-from btx.data import augment, utils
+from btx.data import transforms as augment
 
 
 def _sample() -> dict[str, object]:
@@ -82,21 +82,19 @@ def test_get_vflip_affine_matches_spec_formula():
     np.testing.assert_allclose(got, expected, atol=1e-8)
 
 
-def test_get_rot90_affine_k1_matches_spec_formula():
-    got = augment.get_rot90_affine(k=1, size=256)
+def test_get_rotation_affine_90_matches_manual():
+    got = augment.get_rotation_affine(90.0, size=256)
     expected = np.array([
         [0.0, 1.0, 0.0],
         [-1.0, 0.0, 255.0],
         [0.0, 0.0, 1.0],
     ])
-    np.testing.assert_allclose(got, expected, atol=1e-8)
+    np.testing.assert_allclose(got, expected, atol=1e-6)
 
 
-@given(k=st.integers(min_value=0, max_value=3))
-def test_rot90_inverse_property(k: int):
-    rot = augment.get_rot90_affine(k=k, size=256)
-    inv = augment.get_rot90_affine(k=(4 - k) % 4, size=256)
-    np.testing.assert_allclose(inv @ rot, np.eye(3), atol=1e-8)
+def test_rotation_affine_identity_at_zero():
+    got = augment.get_rotation_affine(0.0, size=256)
+    np.testing.assert_allclose(got, np.eye(3), atol=1e-6)
 
 
 _pts_strategy = hnp.arrays(
@@ -264,7 +262,7 @@ def test_finalize_targets_seed2_regression_does_not_fail_inverse_invariant():
     rng = np.random.default_rng(seed=2)
     sample = augment.RandomResizedCrop(cfg).random_map(sample, rng)
     sample = augment.RandomFlip(cfg).random_map(sample, rng)
-    sample = augment.RandomRotation90(cfg).random_map(sample, rng)
+    sample = augment.RandomRotation(cfg).random_map(sample, rng)
     out = augment.FinalizeTargets(cfg=cfg).map(sample)
     assert np.all(np.isfinite(out["t_aug_from_orig"]))
     assert np.all(np.isfinite(out["t_orig_from_aug"]))
@@ -278,7 +276,7 @@ def test_affine_composition_order_is_not_commutative():
         ],
         dtype=np.float32,
     )
-    rot = augment.get_rot90_affine(k=1, size=256)
+    rot = augment.get_rotation_affine(90.0, size=256)
     flip = augment.get_hflip_affine(size=256)
     rot_then_flip = augment.apply_affine_to_points(flip @ rot, points)
     flip_then_rot = augment.apply_affine_to_points(rot @ flip, points)
@@ -326,18 +324,14 @@ def test_random_flip_prob_one_applies_vflip_when_hflip_disabled():
 def test_random_rotation_prob_zero_is_identity():
     cfg = augment.AugmentConfig(rotation_prob=0.0)
     sample = _spatial_sample()
-    out = augment.RandomRotation90(cfg).random_map(
-        sample, np.random.default_rng(seed=17)
-    )
+    out = augment.RandomRotation(cfg).random_map(sample, np.random.default_rng(seed=17))
     np.testing.assert_allclose(out["t_aug_from_orig"], np.eye(3), atol=1e-6)
 
 
 def test_random_rotation_prob_one_is_non_identity():
     cfg = augment.AugmentConfig(rotation_prob=1.0)
     sample = _spatial_sample()
-    out = augment.RandomRotation90(cfg).random_map(
-        sample, np.random.default_rng(seed=17)
-    )
+    out = augment.RandomRotation(cfg).random_map(sample, np.random.default_rng(seed=17))
     assert not np.allclose(out["t_aug_from_orig"], np.eye(3), atol=1e-6)
 
 
@@ -430,5 +424,5 @@ def test_resize_tracks_affine_and_keeps_original_points():
 
 def test_normalize_uses_imagenet_mean_std_by_default():
     sample = {"img": np.array([[[0.485, 0.456, 0.406]]], dtype=np.float32)}
-    out = utils.Normalize().map(sample)
+    out = augment.Normalize().map(sample)
     np.testing.assert_allclose(out["img"], np.zeros((1, 1, 3), dtype=np.float32))

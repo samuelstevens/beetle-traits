@@ -1,12 +1,13 @@
 """Tests for the BeetlePalooza dataset loader."""
 
+import typing as tp
 from pathlib import Path
 
 import numpy as np
 import polars as pl
 import pytest
 
-from btx.data import beetlepalooza, utils
+from btx.data import beetlepalooza, transforms
 
 
 @pytest.fixture
@@ -121,8 +122,8 @@ def test_with_grain_transforms(cfg):
 
     # Test that DecodeRGB transform works on a sample
     sample = ds[0]
-    decode_rgb = utils.DecodeRGB()
-    transformed = decode_rgb.map(sample)
+    decode_rgb = transforms.DecodeRGB()
+    transformed = tp.cast(dict[str, object], decode_rgb.map(sample))
 
     # DecodeRGB should add "img" key
     assert "img" in transformed
