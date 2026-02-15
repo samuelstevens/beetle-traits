@@ -4,6 +4,7 @@ import heapq
 import logging
 import pathlib
 import typing as tp
+from collections.abc import Iterable
 
 import beartype
 import einops
@@ -14,17 +15,71 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import polars as pl
-from jaxtyping import Array, Float, PyTree, jaxtyped
+import wandb
+from jaxtyping import Array, Float, Int, PyTree, jaxtyped
 from PIL import Image, ImageDraw
 
 import btx.data
 import btx.metrics
 import btx.modeling
-import wandb
 
 log_format = "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
 logging.basicConfig(level=logging.INFO, format=log_format)
+
 logger = logging.getLogger("train.py")
+
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
+class ValConfig:
+    every: int = 1_000
+    """How often to run the validation loop."""
+    n_fixed: int = 5
+    """Number of fixed validation images to track across training."""
+    n_worst: int = 1
+    """Number of worst predictions (highest error) to log."""
+    n_random: int = 1
+    """Number of randomly selected validation images per validation step."""
+
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
+class ValRunSpec:
+    """Static inputs for one validation run.
+
+    One instance corresponds to one `validate()` call and one logging namespace (for example, `val/hawaii`). It binds the underlying dataset source, the dataloader built from that source, and per-dataset indexing/context used for metrics and image logging.
+    """
+
+    ds: btx.data.Dataset
+    """Underlying validation dataset source; used to derive `key` and `n_samples`."""
+    dl: Iterable[dict[str, object]]
+    """Finite validation dataloader for this dataset."""
+    fixed_indices: Int[np.ndarray, " n_fixed"]
+    """Stable sample indices to visualize at every validation step."""
+    seen_species: frozenset[str] = frozenset()
+    """Training species used for seen/unseen metrics. Empty means split metrics are disabled."""
+
+    @property
+    def key(self) -> str:
+        return self.ds.cfg.key
+
+    @property
+    def n_samples(self) -> int:
+        return len(self.ds)
+
+    @property
+    def prefix(self) -> str:
+        return f"val/{self.key}"
+
+    def __post_init__(self):
+        msg = f"Expected positive n_samples, got {self.n_samples}"
+        assert self.n_samples > 0, msg
+        if self.fixed_indices.size == 0:
+            return
+        lo = int(np.min(self.fixed_indices))
+        hi = int(np.max(self.fixed_indices))
+        msg = f"Expected fixed_indices in [0, {self.n_samples}), got [{lo}, {hi}]"
+        assert lo >= 0 and hi < self.n_samples, msg
 
 
 @beartype.beartype
@@ -66,14 +121,8 @@ class Config:
     """How often to save predictions."""
     log_every: int = 200
     """How often to log to stderr."""
-    val_every: int = 1_000
-    """How often to run the validation loop."""
-    n_val_fixed: int = 5
-    """Number of fixed validation images to track across training."""
-    n_val_worst: int = 1
-    """Number of worst predictions (highest error) to log."""
-    n_val_random: int = 1
-    """Number of randomly selected validation images per validation step."""
+    val: ValConfig = ValConfig()
+    """Validation schedule and sampling settings."""
     n_steps: int = 100_000
     """Total number of training steps."""
     log_to: pathlib.Path = pathlib.Path("./logs")
@@ -94,81 +143,59 @@ class Config:
 
 
 @beartype.beartype
-def get_transforms(
-    cfg: btx.data.AugmentConfig, *, train_split: bool
-) -> list[grain.transforms.Map | grain.transforms.RandomMap]:
-    tfms: list[grain.transforms.Map | grain.transforms.RandomMap] = [
-        btx.data.utils.DecodeRGB(),
-        btx.data.augment.InitAugState(size=cfg.size, min_px_per_cm=cfg.min_px_per_cm),
-    ]
-    if not train_split or not cfg.go:
-        tfms.append(btx.data.augment.Resize(size=cfg.size))
-        tfms.append(btx.data.augment.FinalizeTargets(cfg=cfg))
-        if cfg.normalize:
-            tfms.append(btx.data.utils.Normalize())
-        return tfms
-
-    tfms.extend([
-        btx.data.augment.RandomResizedCrop(cfg=cfg),
-        btx.data.augment.RandomFlip(cfg=cfg),
-        btx.data.augment.RandomRotation90(cfg=cfg),
-        btx.data.augment.ColorJitter(cfg=cfg),
-        btx.data.augment.FinalizeTargets(cfg=cfg),
-    ])
-    if cfg.normalize:
-        tfms.append(btx.data.utils.Normalize())
-    return tfms
+def get_aug_for_dataset(cfg: Config, ds_cfg: btx.data.Config) -> btx.data.AugmentConfig:
+    aug_cfg_by_key = {
+        "hawaii": cfg.aug_hawaii,
+        "beetlepalooza": cfg.aug_beetlepalooza,
+        "biorepo": cfg.aug_biorepo,
+    }
+    msg = f"No augment config for dataset key '{ds_cfg.key}'"
+    assert ds_cfg.key in aug_cfg_by_key, msg
+    return aug_cfg_by_key[ds_cfg.key]
 
 
 @beartype.beartype
-def get_aug_for_dataset(
-    train_cfg: Config, dataset_cfg: btx.data.Config
-) -> btx.data.AugmentConfig:
-    if isinstance(dataset_cfg, btx.data.HawaiiConfig):
-        return train_cfg.aug_hawaii
-    if isinstance(dataset_cfg, btx.data.BeetlePaloozaConfig):
-        return train_cfg.aug_beetlepalooza
-    if isinstance(dataset_cfg, btx.data.BioRepoConfig):
-        return train_cfg.aug_biorepo
-    msg = f"No augment config for dataset type {type(dataset_cfg).__name__}"
-    raise TypeError(msg)
-
-
-@beartype.beartype
-def make_dataset(
-    cfgs: list[btx.data.Config],
+def make_dataloader(
+    cfg: Config,
+    dss: list[btx.data.Dataset],
     *,
-    seed: int,
-    batch_size: int,
-    n_workers: int,
     shuffle: bool,
     finite: bool,
-    train_cfg: Config,
-    train: bool,
+    is_train: bool,
 ):
+    """Build a mixed Grain dataloader from one or more dataset sources.
+
+    Args:
+        cfg: Global train config, used to look up per-dataset augmentation configs.
+        dss: Dataset sources to include in this loader (plural of ds).
+        shuffle: Whether to shuffle each source dataset before transforms.
+        finite: Whether the iterator should stop after one epoch (`True`) or repeat forever (`False`).
+        is_train: Whether to build the train transform pipeline (`True`) or eval pipeline (`False`).
+
+    Returns:
+        Grain iterable dataset yielding transformed, batched samples.
+    """
+
     datasets = []
     weights = []
 
-    for dataset_cfg in cfgs:
-        source = dataset_cfg.dataset(dataset_cfg)
-        assert isinstance(source, grain.sources.RandomAccessDataSource)
-
-        if len(source) == 0:
-            continue
-
-        ds = grain.MapDataset.source(source).seed(seed)
+    for ds in dss:
+        aug_cfg = get_aug_for_dataset(cfg, ds.cfg)
+        source = tp.cast(tp.Sequence[object], ds)
+        mapped_ds = grain.MapDataset.source(source).seed(cfg.seed)
         if shuffle:
-            ds = ds.shuffle()
+            mapped_ds = mapped_ds.shuffle()
 
-        aug_cfg = get_aug_for_dataset(train_cfg, dataset_cfg)
-        for i, tfm in enumerate(get_transforms(aug_cfg, train_split=train)):
+        for i, tfm in enumerate(
+            btx.data.transforms.make_transforms(aug_cfg, is_train=is_train)
+        ):
             if isinstance(tfm, grain.transforms.RandomMap):
-                ds = ds.random_map(tfm, seed=seed + i)
+                mapped_ds = mapped_ds.random_map(tfm, seed=cfg.seed + i)
             else:
-                ds = ds.map(tfm)
+                mapped_ds = mapped_ds.map(tfm)
 
-        datasets.append(ds)
-        weights.append(len(source))
+        datasets.append(mapped_ds)
+        weights.append(len(ds))
 
     assert datasets, "No datasets provided."
 
@@ -180,19 +207,17 @@ def make_dataset(
         mix_weights = [w / total for w in weights]
         mixed = grain.MapDataset.mix(datasets, weights=mix_weights)
 
-    epochs = None if not finite else 1
-    mixed = mixed.repeat(num_epochs=epochs)
-
-    mixed = mixed.batch(batch_size=batch_size, drop_remainder=False)
+    mixed = mixed.repeat(num_epochs=None if not finite else 1)
+    mixed = mixed.batch(batch_size=cfg.batch_size, drop_remainder=False)
 
     iter_ds = mixed.to_iter_dataset(
         read_options=grain.ReadOptions(num_threads=2, prefetch_buffer_size=8)
     )
 
-    if n_workers > 0:
+    if cfg.n_workers > 0:
         iter_ds = iter_ds.mp_prefetch(
             grain.multiprocessing.MultiprocessingOptions(
-                num_workers=n_workers, per_worker_buffer_size=2
+                num_workers=cfg.n_workers, per_worker_buffer_size=2
             )
         )
 
@@ -201,23 +226,46 @@ def make_dataset(
 
 @jaxtyped(typechecker=beartype.beartype)
 class Aux(eqx.Module):
-    loss: Float[Array, ""]
-    preds: Float[Array, "batch 2 2 2"]
-    point_err_raw: Float[Array, " batch points"]
-    point_err_cm: Float[Array, " batch points"]
-    line_err_raw: Float[Array, " batch lines"]
-    line_err_cm: Float[Array, " batch lines"]
-    width_point_err_raw: Float[Array, " batch"]
-    length_point_err_raw: Float[Array, " batch"]
-    width_point_err_cm: Float[Array, " batch"]
-    length_point_err_cm: Float[Array, " batch"]
-    width_line_err_raw: Float[Array, " batch"]
-    length_line_err_raw: Float[Array, " batch"]
-    width_line_err_cm: Float[Array, " batch"]
-    length_line_err_cm: Float[Array, " batch"]
-    oob_points_frac: Float[Array, ""]
+    """Training/validation auxiliary outputs grouped by role and measurement space.
 
-    def metrics(self):
+    Groups:
+    1) `preds` and `loss` for optimization and visualization.
+    2) `sample_loss` is per-sample masked MSE in augmented-image space.
+    3) Error tensors split by geometry: `point_*` are endpoint distances, `line_*` are absolute line-length errors (both in centimeters).
+    4) Optional per-trait summaries (`width_*`, `length_*`) and batch-level data-quality metric (`oob_points_frac`).
+    """
+
+    # Core optimization/prediction outputs.
+    loss: Float[Array, ""]
+    """Scalar training loss (masked MSE in augmented-image space)."""
+    preds: Float[Array, "batch 2 2 2"]
+    """Predicted endpoints in augmented-image coordinates, shape [batch, lines, points, xy]."""
+
+    # Per-sample augmented-space loss proxy and cm geometric errors.
+    sample_loss: Float[Array, " batch"]
+    """Per-sample masked MSE in augmented-image space, shape [batch]."""
+    point_err_cm: Float[Array, " batch points"]
+    """Per-point Euclidean error in centimeters in original-image space, flattened per sample."""
+    line_err_cm: Float[Array, " batch lines"]
+    """Absolute line-length error in centimeters in original-image space, shape [batch, lines]."""
+
+    # Width/length summaries from point errors in centimeters.
+    width_point_err_cm: Float[Array, " batch"]
+    """Mean width-point error in centimeters, shape [batch]."""
+    length_point_err_cm: Float[Array, " batch"]
+    """Mean length-point error in centimeters, shape [batch]."""
+
+    # Width/length summaries from line-length errors in centimeters.
+    width_line_err_cm: Float[Array, " batch"]
+    """Width line-length absolute error in centimeters, shape [batch]."""
+    length_line_err_cm: Float[Array, " batch"]
+    """Length line-length absolute error in centimeters, shape [batch]."""
+
+    # Batch-level data quality.
+    oob_points_frac: Float[Array, ""]
+    """Batch-mean fraction of out-of-bounds target points after augmentation."""
+
+    def metrics(self) -> dict:
         return {
             "loss": self.loss,
             "point_err_cm": self.point_err_cm,
@@ -233,41 +281,41 @@ class Aux(eqx.Module):
 @eqx.filter_jit()
 @jaxtyped(typechecker=beartype.beartype)
 def loss_and_aux(
-    diff_model: eqx.Module,
-    static_model: eqx.Module,
-    batch: dict[str, Array],
-    *,
-    min_px_per_cm: float,
+    diff_model: eqx.Module, static_model: eqx.Module, batch: dict[str, Array]
 ) -> tuple[Float[Array, ""], Aux]:
+    # 1) Forward pass in augmented-image space.
     model = eqx.combine(diff_model, static_model)
     preds = jax.vmap(model)(batch["img"])
 
-    # Apply loss mask to exclude certain measurements (e.g., BeetlePalooza width)
+    # 2) Optimization loss in augmented-image space, masked per line (for datasets with partial labels).
     squared_error = (preds - batch["tgt"]) ** 2
     mask = einops.rearrange(batch["loss_mask"], "b l -> b l () ()")
     masked_error = squared_error * mask
-    # Each mask element covers 2 points x 2 coords = 4 values, so active_lines counts unmasked coordinate values.
-    active_lines = jnp.sum(mask) * 4
-    mse = jnp.where(active_lines > 0, jnp.sum(masked_error) / active_lines, 0.0)
+    # Each active line contributes 2 points x 2 coordinates = 4 scalar values.
+    active_values = jnp.sum(mask) * 4
+    active_values_safe = jnp.maximum(active_values, 1.0)
+    mse = jnp.sum(masked_error) / active_values_safe
 
-    # Metrics
+    # 3) Per-sample masked loss for validation bookkeeping (e.g., seen vs unseen species).
+    sample_active_values = jnp.sum(mask, axis=(1, 2, 3)) * 4
+    sample_loss = jnp.where(
+        sample_active_values > 0,
+        jnp.sum(masked_error, axis=(1, 2, 3)) / sample_active_values,
+        jnp.nan,
+    )
+
+    # 4) Broadcast masks to line-level and point-level metric tensors.
     mask_line = batch["loss_mask"]
     mask_point = mask_line[:, :, None]
 
-    # Raw space (augmented image space, same space as loss)
-    point_err_raw_line = jnp.linalg.norm(preds - batch["tgt"], axis=-1)
-    tgts_start_raw, tgts_end_raw = jnp.unstack(batch["tgt"], axis=2)
-    tgts_line_raw = jnp.linalg.norm(tgts_start_raw - tgts_end_raw, axis=-1)
-    preds_start_raw, preds_end_raw = jnp.unstack(preds, axis=2)
-    preds_line_raw = jnp.linalg.norm(preds_start_raw - preds_end_raw, axis=-1)
-    line_err_raw = jnp.abs(preds_line_raw - tgts_line_raw)
-
-    # Physical metrics in original-image space.
-    preds_orig = btx.metrics.apply_affine_jax(batch["t_orig_from_aug"], preds)
+    # 5) Move predictions back to original-image coordinates and resolve endpoint ordering.
+    preds_orig = btx.metrics.apply_affine(batch["t_orig_from_aug"], preds)
     tgts_orig = btx.metrics.choose_endpoint_matching(preds_orig, batch["points_px"])
+
+    # 6) Compute physical errors in centimeters.
     point_err_px_line = jnp.linalg.norm(preds_orig - tgts_orig, axis=-1)
     metric_mask_cm, px_per_cm = btx.metrics.get_metric_mask_cm(
-        batch["scalebar_px"], batch["metric_mask_cm"], min_px_per_cm=min_px_per_cm
+        batch["scalebar_px"], batch["metric_mask_cm"]
     )
     point_err_cm_line = point_err_px_line / px_per_cm[:, None, None]
     tgts_start_orig, tgts_end_orig = jnp.unstack(tgts_orig, axis=2)
@@ -276,48 +324,37 @@ def loss_and_aux(
     preds_line_orig = jnp.linalg.norm(preds_start_orig - preds_end_orig, axis=-1)
     line_err_cm = jnp.abs(preds_line_orig - tgts_line_orig) / px_per_cm[:, None]
 
+    # 7) Apply both supervision and unit-conversion validity masks, then flatten point errors.
     metric_mask_line = mask_line * metric_mask_cm[:, None]
     metric_mask_point = mask_point * metric_mask_cm[:, None, None]
-    point_err_raw_line = jnp.where(mask_point > 0, point_err_raw_line, jnp.nan)
     point_err_cm_line = jnp.where(metric_mask_point > 0, point_err_cm_line, jnp.nan)
-    line_err_raw = jnp.where(mask_line > 0, line_err_raw, jnp.nan)
     line_err_cm = jnp.where(metric_mask_line > 0, line_err_cm, jnp.nan)
-
-    point_err_raw = einops.rearrange(
-        point_err_raw_line, "batch lines points -> batch (lines points)"
-    )
     point_err_cm = einops.rearrange(
         point_err_cm_line, "batch lines points -> batch (lines points)"
     )
 
-    width_point_err_raw = jnp.nanmean(point_err_raw_line[:, 0], axis=1)
-    length_point_err_raw = jnp.nanmean(point_err_raw_line[:, 1], axis=1)
+    # 8) Build per-trait summaries and batch-level data quality.
     width_point_err_cm = jnp.nanmean(point_err_cm_line[:, 0], axis=1)
     length_point_err_cm = jnp.nanmean(point_err_cm_line[:, 1], axis=1)
 
-    width_line_err_raw = line_err_raw[:, 0]
-    length_line_err_raw = line_err_raw[:, 1]
     width_line_err_cm = line_err_cm[:, 0]
     length_line_err_cm = line_err_cm[:, 1]
     oob_points_frac = jnp.nanmean(batch["oob_points_frac"])
 
-    return mse, Aux(
+    # 9) Package all logging/analysis outputs.
+    aux = Aux(
         mse,
         preds,
-        point_err_raw,
+        sample_loss,
         point_err_cm,
-        line_err_raw,
         line_err_cm,
-        width_point_err_raw,
-        length_point_err_raw,
         width_point_err_cm,
         length_point_err_cm,
-        width_line_err_raw,
-        length_line_err_raw,
         width_line_err_cm,
         length_line_err_cm,
         oob_points_frac,
     )
+    return mse, aux
 
 
 @eqx.filter_jit()
@@ -328,15 +365,11 @@ def step_model(
     state: tp.Any,
     batch: dict[str, Array],
     filter_spec: PyTree[bool],
-    *,
-    min_px_per_cm: float,
 ) -> tuple[eqx.Module, tp.Any, Aux]:
     diff_model, static_model = eqx.partition(model, filter_spec)
 
     loss_fn = eqx.filter_value_and_grad(loss_and_aux, has_aux=True)
-    (loss, aux), grads = loss_fn(
-        diff_model, static_model, batch, min_px_per_cm=min_px_per_cm
-    )
+    (loss, aux), grads = loss_fn(diff_model, static_model, batch)
 
     updates, new_state = optim.update(grads, state, diff_model)
     diff_model = eqx.apply_updates(diff_model, updates)
@@ -360,7 +393,7 @@ def plot_preds(
 
     # Map predictions from augmented image space back to original image space.
     i = sample_idx
-    pred_orig = btx.metrics.apply_affine_jax(
+    pred_orig = btx.metrics.apply_affine(
         batch["t_orig_from_aug"][i : i + 1], preds[i : i + 1]
     )[0]
     pred_width_px, pred_length_px = np.asarray(pred_orig)
@@ -403,29 +436,31 @@ def plot_preds(
     return beetle_id, img
 
 
-@beartype.beartype
+@jaxtyped(typechecker=beartype.beartype)
 def validate(
-    cfg: Config,
-    model: eqx.Module,
-    val_dl,
-    filter_spec: PyTree[bool],
-    *,
-    min_px_per_cm: float,
-    fixed_indices: np.ndarray,
-    val_total_samples: int,
-    prefix: str,
-    training_species: set[str] | None = None,
-):
+    cfg: Config, model: eqx.Module, filter_spec: PyTree[bool], spec: ValRunSpec
+) -> dict[str, float | wandb.Image]:
+    """Run validation on one dataset loader and return scalar metrics and image artifacts.
+
+    Args:
+        cfg: Global training config with logging/selection settings.
+        model: Current model parameters.
+        filter_spec: Equinox filter spec used to partition trainable/static leaves.
+        spec: Per-dataset validation inputs (dataset source, dataloader, fixed indices, and seen-species split context).
+
+    Returns:
+        Flat dict containing aggregate validation metrics and optional `wandb.Image` entries.
+    """
+
     metrics = []
 
     # Fixed indices - same samples tracked across training
-    fixed_batch_idxs = fixed_indices // cfg.batch_size
-    fixed_sample_batch_idxs = fixed_indices % cfg.batch_size
+    fixed_batch_idxs = spec.fixed_indices // cfg.batch_size
+    fixed_sample_batch_idxs = spec.fixed_indices % cfg.batch_size
 
     # Random indices - different samples each validation step
-    random_rng = np.random.default_rng()
-    random_indices = random_rng.choice(
-        val_total_samples, size=min(cfg.n_val_random, val_total_samples), replace=False
+    random_indices = np.random.default_rng().choice(
+        spec.n_samples, size=min(cfg.val.n_random, spec.n_samples), replace=False
     )
     random_batch_idxs = random_indices // cfg.batch_size
     random_sample_batch_idxs = random_indices % cfg.batch_size
@@ -435,33 +470,27 @@ def validate(
     seen_metrics = []
     unseen_metrics = []
 
-    for i, batch in enumerate(val_dl):
+    for i, batch in enumerate(spec.dl):
         batch, metadata = to_device(batch)
         diff_model, static_model = eqx.partition(model, filter_spec)
-        loss, aux = loss_and_aux(
-            diff_model,
-            static_model,
-            batch,
-            min_px_per_cm=min_px_per_cm,
-        )
+        loss, aux = loss_and_aux(diff_model, static_model, batch)
         metrics.append(aux.metrics())
 
         # Track seen vs unseen species metrics
-        if training_species is not None:
+        if spec.seen_species:
             is_seen = jnp.array([
-                name in training_species for name in metadata["scientific_name"]
+                name in spec.seen_species for name in metadata["scientific_name"]
             ])
-            sample_loss = jnp.nanmean(aux.point_err_raw**2, axis=1)
 
             seen_metrics.append({
                 "line_err_cm": jnp.where(is_seen[:, None], aux.line_err_cm, jnp.nan),
                 "point_err_cm": jnp.where(is_seen[:, None], aux.point_err_cm, jnp.nan),
-                "loss": jnp.where(is_seen, sample_loss, jnp.nan),
+                "loss": jnp.where(is_seen, aux.sample_loss, jnp.nan),
             })
             unseen_metrics.append({
                 "line_err_cm": jnp.where(~is_seen[:, None], aux.line_err_cm, jnp.nan),
                 "point_err_cm": jnp.where(~is_seen[:, None], aux.point_err_cm, jnp.nan),
-                "loss": jnp.where(~is_seen, sample_loss, jnp.nan),
+                "loss": jnp.where(~is_seen, aux.sample_loss, jnp.nan),
             })
 
         # check to print any of the fixed images
@@ -469,17 +498,21 @@ def validate(
         for batch_idx, sample_idx in zip(fixed_batch_idxs, fixed_sample_batch_idxs):
             if i == batch_idx and sample_idx < actual_batch_size:
                 beetle_id, img = plot_preds(batch, metadata, aux.preds, int(sample_idx))
-                images[f"images/{prefix}/fixed/beetle{beetle_id}"] = wandb.Image(img)
+                images[f"images/{spec.prefix}/fixed/beetle{beetle_id}"] = wandb.Image(
+                    img
+                )
 
         # check to print any of the random images
         for batch_idx, sample_idx in zip(random_batch_idxs, random_sample_batch_idxs):
             if i == batch_idx and sample_idx < actual_batch_size:
                 beetle_id, img = plot_preds(batch, metadata, aux.preds, int(sample_idx))
-                images[f"images/{prefix}/random/beetle{beetle_id}"] = wandb.Image(img)
+                images[f"images/{spec.prefix}/random/beetle{beetle_id}"] = wandb.Image(
+                    img
+                )
 
-        # track worst predictions by line_err_raw using a min-heap for efficiency
+        # track worst predictions by line_err_cm using a min-heap for efficiency
         # Extract only the data needed for plotting to avoid keeping entire batch arrays in memory
-        sample_errors = jnp.nanmean(aux.line_err_raw, axis=1)  # take mean of the lines
+        sample_errors = jnp.nanmean(aux.line_err_cm, axis=1)  # take mean of the lines
         for j, err in enumerate(sample_errors):
             if jnp.isnan(err):
                 continue
@@ -497,7 +530,7 @@ def validate(
             }
             sample_preds = jnp.asarray(aux.preds[j])[jnp.newaxis]
             candidate = (err_val, sample_batch, sample_metadata, sample_preds)
-            if len(worst_candidates) < cfg.n_val_worst:
+            if len(worst_candidates) < cfg.val.n_worst:
                 heapq.heappush(worst_candidates, candidate)
             elif err_val > worst_candidates[0][0]:
                 heapq.heapreplace(worst_candidates, candidate)
@@ -505,21 +538,21 @@ def validate(
     # plot worst predictions
     for err, sample_batch, sample_metadata, sample_preds in worst_candidates:
         beetle_id, img = plot_preds(sample_batch, sample_metadata, sample_preds, 0)
-        images[f"images/{prefix}/worst/beetle{beetle_id}"] = wandb.Image(img)
+        images[f"images/{spec.prefix}/worst/beetle{beetle_id}"] = wandb.Image(img)
 
     metrics = {
         k: jnp.concatenate([dct[k].reshape(-1) for dct in metrics]) for k in metrics[0]
     }
 
-    means = {f"{prefix}/{k}": jnp.nanmean(v).item() for k, v in metrics.items()}
-    maxes = {f"{prefix}/max_{k}": jnp.nanmax(v).item() for k, v in metrics.items()}
+    means = {f"{spec.prefix}/{k}": jnp.nanmean(v).item() for k, v in metrics.items()}
+    maxes = {f"{spec.prefix}/max_{k}": jnp.nanmax(v).item() for k, v in metrics.items()}
     medians = {
-        f"{prefix}/median_{k}": jnp.nanmedian(v).item() for k, v in metrics.items()
+        f"{spec.prefix}/median_{k}": jnp.nanmedian(v).item() for k, v in metrics.items()
     }
 
     # Compute seen vs unseen species metrics
     seen_unseen_metrics = {}
-    if training_species is not None and seen_metrics:
+    if spec.seen_species and seen_metrics:
         all_seen = {
             k: jnp.concatenate([m[k].reshape(-1) for m in seen_metrics], axis=0)
             for k in seen_metrics[0]
@@ -530,16 +563,16 @@ def validate(
         }
 
         for key in ["line_err_cm", "point_err_cm", "loss"]:
-            seen_unseen_metrics[f"{prefix}/seen_{key}"] = jnp.nanmean(
+            seen_unseen_metrics[f"{spec.prefix}/seen_{key}"] = jnp.nanmean(
                 all_seen[key]
             ).item()
-            seen_unseen_metrics[f"{prefix}/unseen_{key}"] = jnp.nanmean(
+            seen_unseen_metrics[f"{spec.prefix}/unseen_{key}"] = jnp.nanmean(
                 all_unseen[key]
             ).item()
-            seen_unseen_metrics[f"{prefix}/seen_max_{key}"] = jnp.nanmax(
+            seen_unseen_metrics[f"{spec.prefix}/seen_max_{key}"] = jnp.nanmax(
                 all_seen[key]
             ).item()
-            seen_unseen_metrics[f"{prefix}/unseen_max_{key}"] = jnp.nanmax(
+            seen_unseen_metrics[f"{spec.prefix}/unseen_max_{key}"] = jnp.nanmax(
                 all_unseen[key]
             ).item()
 
@@ -553,7 +586,7 @@ def validate(
 
 
 @beartype.beartype
-def get_training_species(cfg: "Config") -> set[str]:
+def get_training_species(cfg: "Config") -> frozenset[str]:
     """Collect scientific names from training datasets (Hawaii train + BeetlePalooza).
 
     Important: Only includes species from the TRAIN split, not validation.
@@ -578,7 +611,7 @@ def get_training_species(cfg: "Config") -> set[str]:
         logger.info("BeetlePalooza training species: %d unique", len(palooza_species))
 
     logger.info("Total unique training species: %d", len(species))
-    return species
+    return frozenset(species)
 
 def wsd_schedule(
     peak_value: float,
@@ -635,6 +668,7 @@ def wsd_schedule(
 
     return optax.join_schedules(schedules, boundaries)
 
+@beartype.beartype
 def is_device_array(x: object) -> bool:
     if isinstance(x, (jax.Array, np.ndarray)):
         dt = getattr(x, "dtype", None)
@@ -650,6 +684,7 @@ def is_device_array(x: object) -> bool:
     return False
 
 
+@beartype.beartype
 def to_device(batch: dict[str, object], device=None) -> tuple:
     numeric = {k: v for k, v in batch.items() if is_device_array(v)}
     aux = {k: v for k, v in batch.items() if not is_device_array(v)}
@@ -661,105 +696,36 @@ def to_device(batch: dict[str, object], device=None) -> tuple:
 @beartype.beartype
 def train(cfg: Config):
     key = jax.random.key(seed=cfg.seed)
-    val_cfgs = [
-        dataclasses.replace(cfg.hawaii, split="val"),
-        dataclasses.replace(cfg.biorepo, split="val"),
-    ]
-    val_cfgs = [c for c in val_cfgs if c.go]
-    # Only used when val_cfgs is non-empty (the validate loop is skipped otherwise).
-    val_min_px_per_cm = (
-        min(get_aug_for_dataset(cfg, c).min_px_per_cm for c in val_cfgs)
-        if val_cfgs
-        else 0.0
-    )
+    biorepo_val_cfg = dataclasses.replace(cfg.biorepo, split="val")
+    msg = "BioRepo val must be included: set cfg.biorepo.go=True."
+    assert biorepo_val_cfg.go, msg
 
-    # Get training species for seen/unseen validation metrics
+    val_cfgs = [dataclasses.replace(cfg.hawaii, split="val"), biorepo_val_cfg]
+    val_cfgs = [dataset_cfg for dataset_cfg in val_cfgs if dataset_cfg.go]
     training_species = get_training_species(cfg)
 
     # Create separate validation dataloaders for each dataset
-    # Each entry: (dataloader, fixed_indices, total_samples, use_species_split)
-    val_datasets = {}
+    val_run_specs = []
+    for val_cfg in val_cfgs:
+        ds = val_cfg.dataset(val_cfg)
+        msg = (
+            f"{val_cfg.key} val has {len(ds)} samples, expected at least "
+            f"cfg.val.n_fixed={cfg.val.n_fixed}."
+        )
+        assert len(ds) >= cfg.val.n_fixed, msg
+        dl = make_dataloader(cfg, [ds], shuffle=False, finite=True, is_train=False)
 
-    hawaii_val_cfg = dataclasses.replace(cfg.hawaii, split="val")
-    if hawaii_val_cfg.go:
-        hawaii_source = hawaii_val_cfg.dataset(hawaii_val_cfg)
-        if len(hawaii_source) > 0:
-            hawaii_total = len(hawaii_source)
-            fixed_rng = np.random.default_rng(seed=cfg.seed)
-            hawaii_fixed_indices = fixed_rng.choice(
-                hawaii_total, size=min(cfg.n_val_fixed, hawaii_total), replace=False
-            )
-            hawaii_val_dl = make_dataset(
-                [hawaii_val_cfg],
-                seed=cfg.seed,
-                batch_size=cfg.batch_size,
-                n_workers=cfg.n_workers,
-                shuffle=False,
-                finite=True,
-                train_cfg=cfg,
-                train=False,
-            )
-            val_datasets["val/hawaii"] = (
-                hawaii_val_dl,
-                hawaii_fixed_indices,
-                hawaii_total,
-                False,
-            )
-            logger.info(
-                "Hawaii validation: %d samples, fixed indices: %s",
-                hawaii_total,
-                hawaii_fixed_indices,
-            )
+        rng = np.random.default_rng(seed=cfg.seed)
+        fixed_indices = rng.choice(len(ds), size=cfg.val.n_fixed, replace=False)
+        seen_species = training_species if val_cfg.key == "biorepo" else frozenset()
 
-    biorepo_val_cfg = dataclasses.replace(cfg.biorepo, split="val")
-    if biorepo_val_cfg.go:
-        biorepo_source = biorepo_val_cfg.dataset(biorepo_val_cfg)
-        if len(biorepo_source) > 0:
-            biorepo_total = len(biorepo_source)
-            fixed_rng = np.random.default_rng(seed=cfg.seed)
-            biorepo_fixed_indices = fixed_rng.choice(
-                biorepo_total, size=min(cfg.n_val_fixed, biorepo_total), replace=False
-            )
-            biorepo_val_dl = make_dataset(
-                [biorepo_val_cfg],
-                seed=cfg.seed,
-                batch_size=cfg.batch_size,
-                n_workers=cfg.n_workers,
-                shuffle=False,
-                finite=True,
-                train_cfg=cfg,
-                train=False,
-            )
-            val_datasets["val/biorepo"] = (
-                biorepo_val_dl,
-                biorepo_fixed_indices,
-                biorepo_total,
-                True,
-            )
-            logger.info(
-                "BioRepo validation: %d samples, fixed indices: %s",
-                biorepo_total,
-                biorepo_fixed_indices,
-            )
+        val_run_specs.append(ValRunSpec(ds, dl, fixed_indices, seen_species))
+        logger.info("%s validation: fixed indices: %s", val_cfg.key, fixed_indices)
 
-    train_cfgs = [
-        dataclasses.replace(cfg.hawaii, split="train"),
-        cfg.beetlepalooza,
-    ]
-    train_cfgs = [c for c in train_cfgs if c.go]
-    train_min_px_per_cm = min(
-        get_aug_for_dataset(cfg, dataset_cfg).min_px_per_cm
-        for dataset_cfg in train_cfgs
-    )
-    train_dl = make_dataset(
-        train_cfgs,
-        seed=cfg.seed,
-        batch_size=cfg.batch_size,
-        n_workers=cfg.n_workers,
-        shuffle=True,
-        finite=False,
-        train_cfg=cfg,
-        train=True,
+    train_cfgs = [dataclasses.replace(cfg.hawaii, split="train"), cfg.beetlepalooza]
+    train_dss = [ds_cfg.dataset(ds_cfg) for ds_cfg in train_cfgs if ds_cfg.go]
+    train_dl = make_dataloader(
+        cfg, train_dss, shuffle=True, finite=False, is_train=True
     )
 
     # Set up learning rate scheduler
@@ -788,7 +754,7 @@ def train(cfg: Config):
     
     model = btx.modeling.make(cfg.model, key)
 
-    # freeze the Vit
+    # Freeze the Vit
 
     # Step 1 create the filter_specification
     # Create a pytree with the same shape as model setting each leaf to false
@@ -806,25 +772,21 @@ def train(cfg: Config):
     state = optim.init(diff_model)
 
     run = wandb.init(
-        project=cfg.wandb_project, config=dataclasses.asdict(cfg), tags=cfg.tags
+        project=cfg.wandb_project,
+        config=dataclasses.asdict(cfg),
+        tags=cfg.tags,
+        # Hidden wandb folder
+        dir=".wandb",
     )
 
     # Training
     for step, batch in enumerate(train_dl):
         batch, metadata = to_device(batch)
-        model, state, aux = step_model(
-            model,
-            optim,
-            state,
-            batch,
-            filter_spec,
-            min_px_per_cm=train_min_px_per_cm,
-        )
+        model, state, aux = step_model(model, optim, state, batch, filter_spec)
 
         if step % cfg.save_every == 0:
-            beetle_id, img = plot_preds(
-                batch, metadata, aux.preds, 0
-            )  # since batch is shuffled, choose elem 0
+            # since batch is shuffled, choose elem 0
+            beetle_id, img = plot_preds(batch, metadata, aux.preds, 0)
             run.log(
                 {"step": step, f"images/train/beetle{beetle_id}": wandb.Image(img)},
                 step=step,
@@ -843,29 +805,13 @@ def train(cfg: Config):
                 {"step": step, "train/loss": metrics["train/loss"]},
             )
 
-        if step % cfg.val_every == 0:
-            all_val_metrics = {}
-            for prefix, (
-                val_dl,
-                fixed_indices,
-                val_total_samples,
-                use_species_split,
-            ) in val_datasets.items():
-                species_set = training_species if use_species_split else None
-                metrics = validate(
-                    cfg,
-                    model,
-                    val_dl,
-                    filter_spec,
-                    min_px_per_cm=val_min_px_per_cm,
-                    fixed_indices=fixed_indices,
-                    val_total_samples=val_total_samples,
-                    prefix=prefix,
-                    training_species=species_set,
-                )
-                all_val_metrics.update(metrics)
-            run.log(all_val_metrics, step=step)
-            logger.info("Validation: %d %s", step, all_val_metrics)
+        if step % cfg.val.every == 0:
+            val_metrics = {}
+            for run_spec in val_run_specs:
+                val_metrics.update(validate(cfg, model, filter_spec, run_spec))
+
+            run.log(val_metrics, step=step)
+            logger.info("Validation: %d %s", step, val_metrics)
 
         if step >= cfg.n_steps:
             break

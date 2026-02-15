@@ -7,7 +7,7 @@ from hypothesis.extra import numpy as hnp
 from btx import metrics
 
 
-def test_apply_affine_jax_matches_manual_homogeneous_matmul():
+def test_apply_affine_matches_manual_homogeneous_matmul():
     affine = jnp.array(
         [
             [
@@ -28,7 +28,7 @@ def test_apply_affine_jax_matches_manual_homogeneous_matmul():
         dtype=jnp.float32,
     )
 
-    got = np.asarray(metrics.apply_affine_jax(affine, points))
+    got = np.asarray(metrics.apply_affine(affine, points))
 
     flat = np.asarray(points).reshape(-1, 2)
     ones = np.ones((flat.shape[0], 1), dtype=np.float32)
@@ -131,9 +131,7 @@ def test_get_metric_mask_cm_masks_nonfinite_or_tiny_scalebars():
         dtype=jnp.float32,
     )
     metric_mask_cm = jnp.array([1.0, 1.0, 1.0], dtype=jnp.float32)
-    out_mask, px_per_cm = metrics.get_metric_mask_cm(
-        scalebar, metric_mask_cm, min_px_per_cm=1e-6
-    )
+    out_mask, px_per_cm = metrics.get_metric_mask_cm(scalebar, metric_mask_cm)
 
     np.testing.assert_allclose(np.asarray(out_mask)[:2], np.array([1.0, 0.0]))
     assert float(out_mask[2]) == 0.0
@@ -150,9 +148,7 @@ def test_get_metric_mask_cm_respects_input_metric_mask():
         dtype=jnp.float32,
     )
     metric_mask_cm = jnp.array([0.0, 1.0], dtype=jnp.float32)
-    out_mask, px_per_cm = metrics.get_metric_mask_cm(
-        scalebar, metric_mask_cm, min_px_per_cm=1e-6
-    )
+    out_mask, px_per_cm = metrics.get_metric_mask_cm(scalebar, metric_mask_cm)
     np.testing.assert_allclose(np.asarray(out_mask), np.array([0.0, 1.0]), atol=1e-8)
     np.testing.assert_allclose(np.asarray(px_per_cm), np.array([5.0, 7.0]), atol=1e-8)
 
@@ -166,7 +162,5 @@ def test_get_metric_mask_cm_masks_at_exact_min_threshold():
         dtype=jnp.float32,
     )
     metric_mask_cm = jnp.array([1.0, 1.0], dtype=jnp.float32)
-    out_mask, _ = metrics.get_metric_mask_cm(
-        scalebar, metric_mask_cm, min_px_per_cm=1e-6
-    )
+    out_mask, _ = metrics.get_metric_mask_cm(scalebar, metric_mask_cm)
     np.testing.assert_allclose(np.asarray(out_mask), np.array([0.0, 1.0]), atol=1e-8)

@@ -2,9 +2,12 @@ import beartype
 import jax.numpy as jnp
 from jaxtyping import Array, Float, jaxtyped
 
+# Minimum valid pixels-per-centimeter for cm metrics. Smaller or non-finite scalebars are masked out.
+MIN_PX_PER_CM: float = 1e-6
+
 
 @jaxtyped(typechecker=beartype.beartype)
-def apply_affine_jax(
+def apply_affine(
     affine_b33: Float[Array, "batch 3 3"], points_bl22: Float[Array, "batch lines 2 2"]
 ) -> Float[Array, "batch lines 2 2"]:
     b, lines, points, coords = points_bl22.shape
@@ -38,10 +41,7 @@ def choose_endpoint_matching(
 
 @jaxtyped(typechecker=beartype.beartype)
 def get_metric_mask_cm(
-    scalebar_b22: Float[Array, "batch 2 2"],
-    metric_mask_cm_b: Float[Array, " batch"],
-    *,
-    min_px_per_cm: float,
+    scalebar_b22: Float[Array, "batch 2 2"], metric_mask_cm_b: Float[Array, " batch"]
 ) -> tuple[Float[Array, " batch"], Float[Array, " batch"]]:
     msg = f"Expected scalebar shape [batch, 2, 2], got {scalebar_b22.shape}"
     assert scalebar_b22.ndim == 3 and scalebar_b22.shape[1:] == (2, 2), msg
@@ -57,6 +57,6 @@ def get_metric_mask_cm(
     p0 = scalebar_b22[:, 0, :]
     p1 = scalebar_b22[:, 1, :]
     px_per_cm = jnp.linalg.norm(p1 - p0, axis=-1)
-    is_valid = jnp.isfinite(px_per_cm) & (px_per_cm > min_px_per_cm)
+    is_valid = jnp.isfinite(px_per_cm) & (px_per_cm > MIN_PX_PER_CM)
     metric_mask_cm = metric_mask_cm_b * is_valid.astype(metric_mask_cm_b.dtype)
     return metric_mask_cm, px_per_cm

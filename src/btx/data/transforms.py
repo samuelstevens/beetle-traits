@@ -19,6 +19,8 @@ class AugmentConfig:
     """Whether to enable the augmentation pipeline."""
     size: int = 256
     """Output image side length in pixels. Fixed to 256 for this experiment."""
+    crop: bool = True
+    """Whether to use RandomResizedCrop (True) or plain Resize (False) during training. Set to False for tightly-cropped datasets where random cropping would lose too much content."""
 
     crop_scale_min: float = 0.5
     """Minimum random crop area scale for RandomResizedCrop."""
@@ -34,7 +36,7 @@ class AugmentConfig:
     vflip_prob: float = 0.5
     """Probability of applying vertical flip."""
     rotation_prob: float = 0.75
-    """Probability of applying a non-identity k*90-degree rotation."""
+    """Probability of applying a random rotation (uniform 0-360 degrees)."""
 
     brightness: float = 0.2
     """Color jitter brightness strength."""
@@ -59,6 +61,65 @@ class AugmentConfig:
         assert self.size == 256, msg
         msg = f"Expected color_jitter_prob in [0, 1], got {self.color_jitter_prob}"
         assert 0.0 <= self.color_jitter_prob <= 1.0, msg
+
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
+class DecodeRGB(grain.transforms.Map):
+    def map(self, element: object) -> object:
+        sample = _sample_dct(element)
+        img_fpath = sample["img_fpath"]
+        msg = f"Expected string image path, got {type(img_fpath)}"
+        assert isinstance(img_fpath, str), msg
+        # Heavy I/O lives in a transform so workers can parallelize it.
+        with Image.open(img_fpath) as im:
+            sample["img"] = im.convert("RGB")
+        return sample
+
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
+class GaussianHeatmap(grain.transforms.Map):
+    size: int = 256
+    """Image size in pixels."""
+    sigma: float = 3.0
+    """Standard deviation in pixels."""
+
+    def map(self, element: object) -> object:
+        """Reads the 'tgt' key and adds a 'heatmap': Float[np.ndarray, "height width"] key-value pair to the sample dict.
+
+        The heatmap should be a Gaussian/normal distribution centered on the tgt keypoint, with a peak of 1.0 and a std dev of self.sigma.
+        """
+        sample = _sample_dct(element)
+        return sample
+
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
+class Normalize(grain.transforms.Map):
+    mean: tuple[float, float, float] = (0.485, 0.456, 0.406)
+    std: tuple[float, float, float] = (0.229, 0.224, 0.225)
+
+    def map(self, element: object) -> object:
+        sample = _sample_dct(element)
+        img = sample["img"]
+        msg = f"Expected ndarray image, got {type(img)}"
+        assert isinstance(img, np.ndarray), msg
+        assert img.ndim == 3 and img.shape[-1] == 3, (
+            f"Expected HWC image with 3 channels, got {img.shape}"
+        )
+
+        mean = np.asarray(self.mean, dtype=np.float32)
+        std = np.asarray(self.std, dtype=np.float32)
+        assert mean.shape == (3,), f"Expected mean shape (3,), got {mean.shape}"
+        assert std.shape == (3,), f"Expected std shape (3,), got {std.shape}"
+        assert np.all(np.isfinite(mean)), "mean must be finite"
+        assert np.all(np.isfinite(std)), "std must be finite"
+        assert np.all(std > 0.0), "std must be positive"
+
+        img_f32 = np.asarray(img, dtype=np.float32)
+        sample["img"] = (img_f32 - mean[None, None, :]) / std[None, None, :]
+        return sample
 
 
 @jaxtyped(typechecker=beartype.beartype)
@@ -109,21 +170,6 @@ def get_vflip_affine(*, size: int) -> Float[np.ndarray, "3 3"]:
 
 
 @jaxtyped(typechecker=beartype.beartype)
-def get_rot90_affine(k: int, *, size: int) -> Float[np.ndarray, "3 3"]:
-    msg = f"Expected k in {{0,1,2,3}}, got {k}"
-    assert k in {0, 1, 2, 3}, msg
-    base = np.array(
-        [
-            [0.0, 1.0, 0.0],
-            [-1.0, 0.0, size - 1.0],
-            [0.0, 0.0, 1.0],
-        ],
-        dtype=np.float32,
-    )
-    return np.linalg.matrix_power(base, k)
-
-
-@jaxtyped(typechecker=beartype.beartype)
 def apply_affine_to_points(
     affine_33: Float[np.ndarray, "3 3"], points_l22: Float[np.ndarray, "lines 2 2"]
 ) -> Float[np.ndarray, "lines 2 2"]:
@@ -153,7 +199,7 @@ def is_in_bounds(
 def _sample_dct(element: object) -> dict[str, object]:
     msg = f"Expected sample dict, got {type(element)}"
     assert isinstance(element, dict), msg
-    return element
+    return tp.cast(dict[str, object], element)
 
 
 @beartype.beartype
@@ -165,8 +211,8 @@ def _as_img_f32(img: object) -> Float[np.ndarray, "h w c"]:
     assert isinstance(img, np.ndarray), msg
     assert img.ndim == 3 and img.shape[2] == 3, f"Expected HWC image, got {img.shape}"
     if np.issubdtype(img.dtype, np.integer):
-        return img.astype(np.float32) / 255.0
-    return img.astype(np.float32, copy=False)
+        return np.asarray(img, dtype=np.float32) / 255.0
+    return np.asarray(img, dtype=np.float32)
 
 
 @beartype.beartype
@@ -306,21 +352,47 @@ class RandomFlip(grain.transforms.RandomMap):
         return sample
 
 
+@jaxtyped(typechecker=beartype.beartype)
+def get_rotation_affine(angle_deg: float, *, size: int) -> Float[np.ndarray, "3 3"]:
+    """Affine for counterclockwise rotation by angle_deg around the image center."""
+    rad = np.deg2rad(angle_deg)
+    c, s = float(np.cos(rad)), float(np.sin(rad))
+    cx = cy = (size - 1) / 2.0
+    return np.array(
+        [
+            [c, s, cx * (1 - c) - cy * s],
+            [-s, c, cx * s + cy * (1 - c)],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+
+
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
-class RandomRotation90(grain.transforms.RandomMap):
+class RandomRotation(grain.transforms.RandomMap):
+    """Uniform random rotation from 0-360 degrees."""
+
     cfg: AugmentConfig
 
     def random_map(self, element: object, rng: np.random.Generator) -> object:
         sample = _sample_dct(element)
         img = _as_img_f32(sample["img"])
         if rng.random() < self.cfg.rotation_prob:
-            k = int(rng.integers(1, 4))
+            angle = float(rng.uniform(0.0, 360.0))
         else:
-            k = 0
+            angle = 0.0
 
-        sample["img"] = np.rot90(img, k=k, axes=(0, 1)).copy()
-        _compose_affine(sample, get_rot90_affine(k=k, size=self.cfg.size))
+        if angle != 0.0:
+            arr_u8 = np.clip(np.rint(img * 255.0), 0.0, 255.0).astype(np.uint8)
+            pil = Image.fromarray(arr_u8)
+            pil = pil.rotate(
+                angle, resample=Image.Resampling.BILINEAR, fillcolor=(0, 0, 0)
+            )
+            img = np.asarray(pil, dtype=np.float32) / 255.0
+
+        sample["img"] = img
+        _compose_affine(sample, get_rotation_affine(angle, size=self.cfg.size))
         return sample
 
 
@@ -427,3 +499,45 @@ class FinalizeTargets(grain.transforms.Map):
         sample["t_orig_from_aug"] = t_orig_from_aug.astype(np.float32, copy=False)
         sample["oob_points_frac"] = np.float32(1.0 - np.mean(in_bounds_l2))
         return sample
+
+
+@beartype.beartype
+def make_transforms(
+    cfg: AugmentConfig, *, is_train: bool
+) -> list[grain.transforms.Map | grain.transforms.RandomMap]:
+    """Build the Grain transform list for train or eval.
+
+    Args:
+        cfg: Augmentation settings, target sizing, and optional normalization controls.
+        is_train: Whether to build the train pipeline. If false, build the eval pipeline.
+
+    Returns:
+        Ordered `grain.transforms.Map`/`RandomMap` transforms to apply to each sample.
+
+    The pipeline always starts with `DecodeRGB` and `InitAugState` and always applies `FinalizeTargets` before optional `Normalize`. If `is_train` and `cfg.go` are both true, the pipeline includes stochastic spatial/color augmentation (`RandomResizedCrop`, `RandomFlip`, `RandomRotation`, `ColorJitter`). Otherwise it uses deterministic `Resize`.
+    """
+
+    tfms: list[grain.transforms.Map | grain.transforms.RandomMap] = [
+        DecodeRGB(),
+        InitAugState(size=cfg.size, min_px_per_cm=cfg.min_px_per_cm),
+    ]
+    if not is_train or not cfg.go:
+        tfms.append(Resize(size=cfg.size))
+        tfms.append(FinalizeTargets(cfg=cfg))
+        if cfg.normalize:
+            tfms.append(Normalize())
+        return tfms
+
+    if cfg.crop:
+        tfms.append(RandomResizedCrop(cfg=cfg))
+    else:
+        tfms.append(Resize(size=cfg.size))
+    tfms.extend([
+        RandomFlip(cfg=cfg),
+        RandomRotation(cfg=cfg),
+        ColorJitter(cfg=cfg),
+        FinalizeTargets(cfg=cfg),
+    ])
+    if cfg.normalize:
+        tfms.append(Normalize())
+    return tfms

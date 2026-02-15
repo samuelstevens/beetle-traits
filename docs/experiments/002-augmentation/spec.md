@@ -16,11 +16,11 @@ The highest-risk failure mode is wrong physical metrics (cm) due to coordinate-s
 | Topic | Decision |
 |---|---|
 | Input size | Fixed `256x256` for now. |
-| Train pipeline | `DecodeRGB -> RandomResizedCrop -> RandomFlip -> RandomRotation90 -> ColorJitter -> Normalize`. |
+| Train pipeline | `DecodeRGB -> RandomResizedCrop -> RandomFlip -> RandomRotation -> ColorJitter -> Normalize`. |
 | Eval pipeline | `DecodeRGB -> Resize(256) -> Normalize` (no augmentation). |
 | Normalization | ImageNet mean/std: `mean=(0.485, 0.456, 0.406)`, `std=(0.229, 0.224, 0.225)`. |
 | Crop params | `scale=(0.5, 1.0)`, `ratio=(3/4, 4/3)` (shape distortion allowed). |
-| Rotation sampling | With probability `rotation_prob`, sample `k` uniformly from `{1,2,3}`; otherwise `k=0` (identity). |
+| Rotation sampling | With probability `rotation_prob`, sample angle uniformly from `[0, 360)`; otherwise no rotation. |
 | OOB supervision policy | Configurable literal with options `"mask_any_oob"`, `"mask_all_oob"`, `"supervise_oob"`. Default: `"supervise_oob"`. |
 | OOB coordinates | No clipping. |
 | OOB logging | Log `oob_points_frac` for each batch. |
@@ -190,7 +190,7 @@ This is diagnostic only; it does not alter supervision with default `supervise_o
 ## Implementation Plan
 
 1. Add `Normalize` transform in `src/btx/data/utils.py`.
-2. Add spatial/color augmentation transforms in `src/btx/data/augment.py`.
+2. Add spatial/color augmentation transforms in `src/btx/data/transforms.py`.
 3. Track `t_aug_from_orig`/`t_orig_from_aug` through spatial transforms.
 4. Compose per-transform affines through the spatial chain and then build `tgt` once by applying the final `t_aug_from_orig` to immutable `points_px`.
 5. Update `make_dataset` in `train.py` to support train/eval pipeline split with `AugmentConfig`.
