@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 
 import btx.data
-from btx.data import transforms as augment
+import btx.data.transforms
 
 train_fpath = pathlib.Path(__file__).resolve().parents[1] / "train.py"
 spec = importlib.util.spec_from_file_location("train_script", train_fpath)
@@ -29,10 +29,10 @@ def _partition_model(model: eqx.Module):
 
 
 def test_get_transforms_orders_finalize_before_normalize():
-    cfg = augment.AugmentConfig()
+    cfg = btx.data.transforms.AugmentConfig()
 
-    train_tfms = augment.make_transforms(cfg, is_train=True)
-    eval_tfms = augment.make_transforms(cfg, is_train=False)
+    train_tfms = btx.data.transforms.make_transforms(cfg, is_train=True)
+    eval_tfms = btx.data.transforms.make_transforms(cfg, is_train=False)
 
     train_names = [t.__class__.__name__ for t in train_tfms]
     eval_names = [t.__class__.__name__ for t in eval_tfms]
@@ -57,9 +57,9 @@ def test_get_transforms_orders_finalize_before_normalize():
 
 
 def test_get_transforms_can_disable_normalization():
-    cfg = augment.AugmentConfig(normalize=False)
-    train_tfms = augment.make_transforms(cfg, is_train=True)
-    eval_tfms = augment.make_transforms(cfg, is_train=False)
+    cfg = btx.data.transforms.AugmentConfig(normalize=False)
+    train_tfms = btx.data.transforms.make_transforms(cfg, is_train=True)
+    eval_tfms = btx.data.transforms.make_transforms(cfg, is_train=False)
 
     train_names = [t.__class__.__name__ for t in train_tfms]
     eval_names = [t.__class__.__name__ for t in eval_tfms]
@@ -83,9 +83,9 @@ def test_get_transforms_can_disable_normalization():
 
 def test_get_augment_for_dataset_returns_dataset_specific_configs():
     cfg = train.Config(
-        aug_hawaii=augment.AugmentConfig(crop_scale_min=0.5),
-        aug_beetlepalooza=augment.AugmentConfig(crop_scale_min=0.8),
-        aug_biorepo=augment.AugmentConfig(crop_scale_min=0.9),
+        aug_hawaii=btx.data.transforms.AugmentConfig(crop_scale_min=0.5),
+        aug_beetlepalooza=btx.data.transforms.AugmentConfig(crop_scale_min=0.8),
+        aug_biorepo=btx.data.transforms.AugmentConfig(crop_scale_min=0.9),
     )
 
     got_hawaii = train.get_aug_for_dataset(cfg, btx.data.HawaiiConfig())
@@ -106,7 +106,7 @@ def test_loss_and_aux_masks_cm_metrics_and_reports_oob_points_frac():
         "points_px": jnp.zeros((1, 2, 2, 2), dtype=jnp.float32),
         "scalebar_px": jnp.array([[[0.0, 0.0], [10.0, 0.0]]], dtype=jnp.float32),
         "loss_mask": jnp.ones((1, 2), dtype=jnp.float32),
-        "metric_mask_cm": jnp.zeros((1,), dtype=jnp.float32),
+        "scalebar_valid": jnp.array([False]),
         "t_orig_from_aug": jnp.eye(3, dtype=jnp.float32)[None, :, :],
         "oob_points_frac": jnp.array([0.25], dtype=jnp.float32),
     }
@@ -138,7 +138,7 @@ def test_loss_and_aux_uses_order_invariant_endpoint_matching():
         "points_px": jnp.asarray(points_px, dtype=jnp.float32),
         "scalebar_px": jnp.array([[[0.0, 0.0], [5.0, 0.0]]], dtype=jnp.float32),
         "loss_mask": jnp.ones((1, 2), dtype=jnp.float32),
-        "metric_mask_cm": jnp.ones((1,), dtype=jnp.float32),
+        "scalebar_valid": jnp.array([True]),
         "t_orig_from_aug": jnp.eye(3, dtype=jnp.float32)[None, :, :],
         "oob_points_frac": jnp.array([0.0], dtype=jnp.float32),
     }
@@ -164,7 +164,7 @@ def test_loss_and_aux_weights_global_loss_by_active_targets():
             dtype=jnp.float32,
         ),
         "loss_mask": jnp.array([[1.0, 1.0], [1.0, 0.0]], dtype=jnp.float32),
-        "metric_mask_cm": jnp.zeros((2,), dtype=jnp.float32),
+        "scalebar_valid": jnp.array([False, False]),
         "t_orig_from_aug": jnp.tile(
             jnp.eye(3, dtype=jnp.float32)[None, :, :], (2, 1, 1)
         ),
@@ -193,7 +193,7 @@ def test_loss_and_aux_marks_sample_loss_nan_when_sample_is_fully_masked():
             dtype=jnp.float32,
         ),
         "loss_mask": jnp.array([[1.0, 1.0], [0.0, 0.0]], dtype=jnp.float32),
-        "metric_mask_cm": jnp.zeros((2,), dtype=jnp.float32),
+        "scalebar_valid": jnp.array([False, False]),
         "t_orig_from_aug": jnp.tile(
             jnp.eye(3, dtype=jnp.float32)[None, :, :], (2, 1, 1)
         ),
@@ -221,7 +221,7 @@ def test_loss_and_aux_returns_zero_loss_and_zero_grads_when_all_targets_masked()
             dtype=jnp.float32,
         ),
         "loss_mask": jnp.zeros((2, 2), dtype=jnp.float32),
-        "metric_mask_cm": jnp.zeros((2,), dtype=jnp.float32),
+        "scalebar_valid": jnp.array([False, False]),
         "t_orig_from_aug": jnp.tile(
             jnp.eye(3, dtype=jnp.float32)[None, :, :], (2, 1, 1)
         ),

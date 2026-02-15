@@ -121,7 +121,7 @@ def test_choose_endpoint_matching_never_worse_than_direct_or_swapped(
     assert np.all(got_cost <= best_cost + 1e-5)
 
 
-def test_get_metric_mask_cm_masks_nonfinite_or_tiny_scalebars():
+def test_scalebar_mask_rejects_nonfinite_or_tiny_scalebars():
     scalebar = jnp.array(
         [
             [[0.0, 0.0], [1.0, 0.0]],
@@ -130,16 +130,16 @@ def test_get_metric_mask_cm_masks_nonfinite_or_tiny_scalebars():
         ],
         dtype=jnp.float32,
     )
-    metric_mask_cm = jnp.array([1.0, 1.0, 1.0], dtype=jnp.float32)
-    out_mask, px_per_cm = metrics.get_metric_mask_cm(scalebar, metric_mask_cm)
+    scalebar_valid = jnp.array([True, True, True])
+    out_mask, px_per_cm = metrics.get_scalebar_mask(scalebar, scalebar_valid)
 
-    np.testing.assert_allclose(np.asarray(out_mask)[:2], np.array([1.0, 0.0]))
-    assert float(out_mask[2]) == 0.0
+    np.testing.assert_array_equal(np.asarray(out_mask)[:2], np.array([True, False]))
+    assert not out_mask[2]
     np.testing.assert_allclose(np.asarray(px_per_cm)[:2], np.array([1.0, 0.0]))
     assert np.isnan(float(px_per_cm[2]))
 
 
-def test_get_metric_mask_cm_respects_input_metric_mask():
+def test_scalebar_mask_respects_input_mask():
     scalebar = jnp.array(
         [
             [[0.0, 0.0], [5.0, 0.0]],
@@ -147,13 +147,13 @@ def test_get_metric_mask_cm_respects_input_metric_mask():
         ],
         dtype=jnp.float32,
     )
-    metric_mask_cm = jnp.array([0.0, 1.0], dtype=jnp.float32)
-    out_mask, px_per_cm = metrics.get_metric_mask_cm(scalebar, metric_mask_cm)
-    np.testing.assert_allclose(np.asarray(out_mask), np.array([0.0, 1.0]), atol=1e-8)
+    scalebar_valid = jnp.array([False, True])
+    out_mask, px_per_cm = metrics.get_scalebar_mask(scalebar, scalebar_valid)
+    np.testing.assert_array_equal(np.asarray(out_mask), np.array([False, True]))
     np.testing.assert_allclose(np.asarray(px_per_cm), np.array([5.0, 7.0]), atol=1e-8)
 
 
-def test_get_metric_mask_cm_masks_at_exact_min_threshold():
+def test_scalebar_mask_rejects_at_exact_min_threshold():
     scalebar = jnp.array(
         [
             [[0.0, 0.0], [1e-6, 0.0]],
@@ -161,6 +161,6 @@ def test_get_metric_mask_cm_masks_at_exact_min_threshold():
         ],
         dtype=jnp.float32,
     )
-    metric_mask_cm = jnp.array([1.0, 1.0], dtype=jnp.float32)
-    out_mask, _ = metrics.get_metric_mask_cm(scalebar, metric_mask_cm)
-    np.testing.assert_allclose(np.asarray(out_mask), np.array([0.0, 1.0]), atol=1e-8)
+    scalebar_valid = jnp.array([True, True])
+    out_mask, _ = metrics.get_scalebar_mask(scalebar, scalebar_valid)
+    np.testing.assert_array_equal(np.asarray(out_mask), np.array([False, True]))
