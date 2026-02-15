@@ -314,8 +314,8 @@ def loss_and_aux(
 
     # 6) Compute physical errors in centimeters.
     point_err_px_line = jnp.linalg.norm(preds_orig - tgts_orig, axis=-1)
-    metric_mask_cm, px_per_cm = btx.metrics.get_metric_mask_cm(
-        batch["scalebar_px"], batch["metric_mask_cm"]
+    scalebar_valid, px_per_cm = btx.metrics.get_scalebar_mask(
+        batch["scalebar_px"], batch["scalebar_valid"]
     )
     point_err_cm_line = point_err_px_line / px_per_cm[:, None, None]
     tgts_start_orig, tgts_end_orig = jnp.unstack(tgts_orig, axis=2)
@@ -325,8 +325,8 @@ def loss_and_aux(
     line_err_cm = jnp.abs(preds_line_orig - tgts_line_orig) / px_per_cm[:, None]
 
     # 7) Apply both supervision and unit-conversion validity masks, then flatten point errors.
-    metric_mask_line = mask_line * metric_mask_cm[:, None]
-    metric_mask_point = mask_point * metric_mask_cm[:, None, None]
+    metric_mask_line = mask_line * scalebar_valid[:, None]
+    metric_mask_point = mask_point * scalebar_valid[:, None, None]
     point_err_cm_line = jnp.where(metric_mask_point > 0, point_err_cm_line, jnp.nan)
     line_err_cm = jnp.where(metric_mask_line > 0, line_err_cm, jnp.nan)
     point_err_cm = einops.rearrange(

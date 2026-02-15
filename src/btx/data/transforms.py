@@ -268,7 +268,8 @@ class InitAugState(grain.transforms.Map):
 
         px_per_cm = np.linalg.norm(scalebar_px[1] - scalebar_px[0])
         valid = np.isfinite(px_per_cm) and (px_per_cm > self.min_px_per_cm)
-        sample["metric_mask_cm"] = np.float32(1.0 if valid else 0.0)
+        existing = sample.get("scalebar_valid", True)
+        sample["scalebar_valid"] = np.bool_(existing and valid)
 
         ident = np.eye(3, dtype=np.float64)
         sample["t_aug_from_orig"] = ident
@@ -303,18 +304,34 @@ class Resize(grain.transforms.Map):
 class RandomResizedCrop(grain.transforms.RandomMap):
     cfg: AugmentConfig
 
+    _max_attempts: int = 10
+
     def random_map(self, element: object, rng: np.random.Generator) -> object:
         sample = _sample_dct(element)
         img = _as_img_f32(sample["img"])
         h, w, _ = img.shape
         area = float(h * w)
 
-        scale = float(rng.uniform(self.cfg.crop_scale_min, self.cfg.crop_scale_max))
-        ratio = float(rng.uniform(self.cfg.crop_ratio_min, self.cfg.crop_ratio_max))
-        crop_w = int(round(np.sqrt(area * scale * ratio)))
-        crop_h = int(round(np.sqrt(area * scale / ratio)))
-        crop_w = int(np.clip(crop_w, 1, w))
-        crop_h = int(np.clip(crop_h, 1, h))
+        # Resample until the crop fits within the image (following PyTorch convention).
+        crop_w = crop_h = 0
+        for _ in range(self._max_attempts):
+            scale = float(rng.uniform(self.cfg.crop_scale_min, self.cfg.crop_scale_max))
+            ratio = float(rng.uniform(self.cfg.crop_ratio_min, self.cfg.crop_ratio_max))
+            cw = int(round(np.sqrt(area * scale * ratio)))
+            ch = int(round(np.sqrt(area * scale / ratio)))
+            if 0 < cw <= w and 0 < ch <= h:
+                crop_w, crop_h = cw, ch
+                break
+
+        if crop_w == 0:
+            # Fallback: largest center crop at geometric mean of ratio range.
+            target_ratio = np.sqrt(self.cfg.crop_ratio_min * self.cfg.crop_ratio_max)
+            if w / h < target_ratio:
+                crop_w, crop_h = w, max(1, int(round(w / target_ratio)))
+            else:
+                crop_w, crop_h = max(1, int(round(h * target_ratio))), h
+
+        assert 0 < crop_w <= w and 0 < crop_h <= h
 
         x0 = 0 if crop_w == w else int(rng.integers(0, w - crop_w + 1))
         y0 = 0 if crop_h == h else int(rng.integers(0, h - crop_h + 1))

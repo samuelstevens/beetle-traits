@@ -1,3 +1,4 @@
+import hypothesis
 import numpy as np
 import pytest
 from hypothesis import given
@@ -5,7 +6,7 @@ from hypothesis import strategies as st
 from hypothesis.extra import numpy as hnp
 from PIL import Image
 
-from btx.data import transforms as augment
+import btx.data.transforms
 
 
 def _sample() -> dict[str, object]:
@@ -26,28 +27,28 @@ def _sample() -> dict[str, object]:
 def _spatial_sample() -> dict[str, object]:
     sample = _sample()
     sample["t_aug_from_orig"] = np.eye(3, dtype=np.float32)
-    sample["metric_mask_cm"] = 1.0
+    sample["scalebar_valid"] = np.bool_(True)
     return sample
 
 
 def test_augment_config_requires_fixed_size():
     with pytest.raises(AssertionError):
-        augment.AugmentConfig(size=128)
+        btx.data.transforms.AugmentConfig(size=128)
 
 
 @pytest.mark.parametrize("prob", [-0.1, 1.1])
 def test_augment_config_requires_valid_color_jitter_prob(prob: float):
     with pytest.raises(AssertionError):
-        augment.AugmentConfig(color_jitter_prob=prob)
+        btx.data.transforms.AugmentConfig(color_jitter_prob=prob)
 
 
 def test_get_identity_affine_matches_eye():
-    got = augment.get_identity_affine()
+    got = btx.data.transforms.get_identity_affine()
     np.testing.assert_allclose(got, np.eye(3), atol=1e-8)
 
 
 def test_get_crop_resize_affine_matches_spec_formula():
-    got = augment.get_crop_resize_affine(
+    got = btx.data.transforms.get_crop_resize_affine(
         x0=10.0,
         y0=20.0,
         crop_w=128.0,
@@ -63,7 +64,7 @@ def test_get_crop_resize_affine_matches_spec_formula():
 
 
 def test_get_hflip_affine_matches_spec_formula():
-    got = augment.get_hflip_affine(size=256)
+    got = btx.data.transforms.get_hflip_affine(size=256)
     expected = np.array([
         [-1.0, 0.0, 255.0],
         [0.0, 1.0, 0.0],
@@ -73,7 +74,7 @@ def test_get_hflip_affine_matches_spec_formula():
 
 
 def test_get_vflip_affine_matches_spec_formula():
-    got = augment.get_vflip_affine(size=256)
+    got = btx.data.transforms.get_vflip_affine(size=256)
     expected = np.array([
         [1.0, 0.0, 0.0],
         [0.0, -1.0, 255.0],
@@ -83,7 +84,7 @@ def test_get_vflip_affine_matches_spec_formula():
 
 
 def test_get_rotation_affine_90_matches_manual():
-    got = augment.get_rotation_affine(90.0, size=256)
+    got = btx.data.transforms.get_rotation_affine(90.0, size=256)
     expected = np.array([
         [0.0, 1.0, 0.0],
         [-1.0, 0.0, 255.0],
@@ -93,7 +94,7 @@ def test_get_rotation_affine_90_matches_manual():
 
 
 def test_rotation_affine_identity_at_zero():
-    got = augment.get_rotation_affine(0.0, size=256)
+    got = btx.data.transforms.get_rotation_affine(0.0, size=256)
     np.testing.assert_allclose(got, np.eye(3), atol=1e-6)
 
 
@@ -111,17 +112,17 @@ _pts_strategy = hnp.arrays(
 
 @given(points_l22=_pts_strategy)
 def test_hflip_twice_returns_original(points_l22: np.ndarray):
-    flip = augment.get_hflip_affine(size=256)
-    once = augment.apply_affine_to_points(flip, points_l22)
-    twice = augment.apply_affine_to_points(flip, once)
+    flip = btx.data.transforms.get_hflip_affine(size=256)
+    once = btx.data.transforms.apply_affine_to_points(flip, points_l22)
+    twice = btx.data.transforms.apply_affine_to_points(flip, once)
     np.testing.assert_allclose(twice, points_l22, atol=1e-6)
 
 
 @given(points_l22=_pts_strategy)
 def test_vflip_twice_returns_original(points_l22: np.ndarray):
-    flip = augment.get_vflip_affine(size=256)
-    once = augment.apply_affine_to_points(flip, points_l22)
-    twice = augment.apply_affine_to_points(flip, once)
+    flip = btx.data.transforms.get_vflip_affine(size=256)
+    once = btx.data.transforms.apply_affine_to_points(flip, points_l22)
+    twice = btx.data.transforms.apply_affine_to_points(flip, once)
     np.testing.assert_allclose(twice, points_l22, atol=1e-6)
 
 
@@ -141,7 +142,7 @@ def test_apply_affine_to_points_matches_manual_homogeneous_matmul():
     hom = np.concatenate([flat, ones], axis=1).T
     manual = (affine @ hom).T[:, :2].reshape(points.shape)
 
-    got = augment.apply_affine_to_points(affine, points)
+    got = btx.data.transforms.apply_affine_to_points(affine, points)
     np.testing.assert_allclose(got, manual, atol=1e-8)
 
 
@@ -150,7 +151,7 @@ def test_is_in_bounds_uses_half_open_interval():
         [[0.0, 0.0], [255.0, 255.0]],
         [[-1.0, 4.0], [128.0, 256.0]],
     ])
-    got = augment.is_in_bounds(points, size=256)
+    got = btx.data.transforms.is_in_bounds(points, size=256)
     expected = np.array([
         [True, True],
         [False, False],
@@ -160,23 +161,30 @@ def test_is_in_bounds_uses_half_open_interval():
 
 def test_init_aug_state_adds_identity_matrices_and_metric_mask():
     sample = _sample()
-    out = augment.InitAugState(size=256).map(sample)
+    out = btx.data.transforms.InitAugState(size=256).map(sample)
     np.testing.assert_allclose(out["t_aug_from_orig"], np.eye(3), atol=1e-8)
     np.testing.assert_allclose(out["t_orig_from_aug"], np.eye(3), atol=1e-8)
-    assert float(out["metric_mask_cm"]) == 1.0
+    assert out["scalebar_valid"]
 
 
 def test_init_aug_state_masks_cm_metrics_for_degenerate_scalebar():
     sample = _sample()
     sample["scalebar_px"] = np.array([[1.0, 1.0], [1.0, 1.0]], dtype=np.float32)
-    out = augment.InitAugState(size=256, min_px_per_cm=1e-6).map(sample)
-    assert float(out["metric_mask_cm"]) == 0.0
+    out = btx.data.transforms.InitAugState(size=256, min_px_per_cm=1e-6).map(sample)
+    assert not out["scalebar_valid"]
+
+
+def test_init_aug_state_preserves_existing_scalebar_valid_false():
+    sample = _sample()
+    sample["scalebar_valid"] = np.bool_(False)
+    out = btx.data.transforms.InitAugState(size=256).map(sample)
+    assert not out["scalebar_valid"]
 
 
 def test_init_aug_state_converts_pil_image_to_float_array():
     sample = _sample()
     sample["img"] = Image.fromarray(np.full((256, 256, 3), 128, dtype=np.uint8))
-    out = augment.InitAugState(size=256).map(sample)
+    out = btx.data.transforms.InitAugState(size=256).map(sample)
     img = out["img"]
     assert isinstance(img, np.ndarray)
     assert img.dtype == np.float32
@@ -186,7 +194,7 @@ def test_init_aug_state_converts_pil_image_to_float_array():
 def test_init_aug_state_converts_uint8_array_to_float_array():
     sample = _sample()
     sample["img"] = np.full((256, 256, 3), 64, dtype=np.uint8)
-    out = augment.InitAugState(size=256).map(sample)
+    out = btx.data.transforms.InitAugState(size=256).map(sample)
     img = out["img"]
     assert isinstance(img, np.ndarray)
     assert img.dtype == np.float32
@@ -195,7 +203,7 @@ def test_init_aug_state_converts_uint8_array_to_float_array():
 
 def test_finalize_targets_matches_affine_application_and_inverse_identity():
     sample = _sample()
-    sample["metric_mask_cm"] = 1.0
+    sample["scalebar_valid"] = np.bool_(True)
     sample["t_aug_from_orig"] = np.array(
         [
             [0.0, 1.0, 0.0],
@@ -204,8 +212,10 @@ def test_finalize_targets_matches_affine_application_and_inverse_identity():
         ],
         dtype=np.float32,
     )
-    out = augment.FinalizeTargets(cfg=augment.AugmentConfig()).map(sample)
-    expected_tgt = augment.apply_affine_to_points(
+    out = btx.data.transforms.FinalizeTargets(
+        cfg=btx.data.transforms.AugmentConfig()
+    ).map(sample)
+    expected_tgt = btx.data.transforms.apply_affine_to_points(
         out["t_aug_from_orig"], sample["points_px"]
     )
     np.testing.assert_allclose(out["tgt"], expected_tgt, atol=1e-6)
@@ -225,7 +235,7 @@ def test_finalize_targets_matches_affine_application_and_inverse_identity():
     ],
 )
 def test_finalize_targets_applies_oob_policy_to_loss_mask(
-    oob_policy: augment.OobPolicy, expected: np.ndarray
+    oob_policy: btx.data.transforms.OobPolicy, expected: np.ndarray
 ):
     sample = _spatial_sample()
     sample["points_px"] = np.array(
@@ -235,8 +245,8 @@ def test_finalize_targets_applies_oob_policy_to_loss_mask(
         ],
         dtype=np.float32,
     )
-    cfg = augment.AugmentConfig(oob_policy=oob_policy)
-    out = augment.FinalizeTargets(cfg=cfg).map(sample)
+    cfg = btx.data.transforms.AugmentConfig(oob_policy=oob_policy)
+    out = btx.data.transforms.FinalizeTargets(cfg=cfg).map(sample)
     np.testing.assert_allclose(out["loss_mask"], expected, atol=1e-8)
 
 
@@ -251,19 +261,21 @@ def test_finalize_targets_asserts_when_affine_has_non_finite_values():
         dtype=np.float32,
     )
     with pytest.raises(AssertionError):
-        _ = augment.FinalizeTargets(cfg=augment.AugmentConfig()).map(sample)
+        _ = btx.data.transforms.FinalizeTargets(
+            cfg=btx.data.transforms.AugmentConfig()
+        ).map(sample)
 
 
 def test_finalize_targets_seed2_regression_does_not_fail_inverse_invariant():
-    cfg = augment.AugmentConfig()
-    sample = augment.InitAugState(size=cfg.size, min_px_per_cm=cfg.min_px_per_cm).map(
-        _sample()
-    )
+    cfg = btx.data.transforms.AugmentConfig()
+    sample = btx.data.transforms.InitAugState(
+        size=cfg.size, min_px_per_cm=cfg.min_px_per_cm
+    ).map(_sample())
     rng = np.random.default_rng(seed=2)
-    sample = augment.RandomResizedCrop(cfg).random_map(sample, rng)
-    sample = augment.RandomFlip(cfg).random_map(sample, rng)
-    sample = augment.RandomRotation(cfg).random_map(sample, rng)
-    out = augment.FinalizeTargets(cfg=cfg).map(sample)
+    sample = btx.data.transforms.RandomResizedCrop(cfg).random_map(sample, rng)
+    sample = btx.data.transforms.RandomFlip(cfg).random_map(sample, rng)
+    sample = btx.data.transforms.RandomRotation(cfg).random_map(sample, rng)
+    out = btx.data.transforms.FinalizeTargets(cfg=cfg).map(sample)
     assert np.all(np.isfinite(out["t_aug_from_orig"]))
     assert np.all(np.isfinite(out["t_orig_from_aug"]))
 
@@ -276,22 +288,61 @@ def test_affine_composition_order_is_not_commutative():
         ],
         dtype=np.float32,
     )
-    rot = augment.get_rotation_affine(90.0, size=256)
-    flip = augment.get_hflip_affine(size=256)
-    rot_then_flip = augment.apply_affine_to_points(flip @ rot, points)
-    flip_then_rot = augment.apply_affine_to_points(rot @ flip, points)
+    rot = btx.data.transforms.get_rotation_affine(90.0, size=256)
+    flip = btx.data.transforms.get_hflip_affine(size=256)
+    rot_then_flip = btx.data.transforms.apply_affine_to_points(flip @ rot, points)
+    flip_then_rot = btx.data.transforms.apply_affine_to_points(rot @ flip, points)
     assert not np.allclose(rot_then_flip, flip_then_rot, atol=1e-6)
 
 
+@given(
+    h=st.integers(min_value=64, max_value=512),
+    w=st.integers(min_value=64, max_value=512),
+    scale=st.floats(min_value=0.5, max_value=1.0),
+    ratio=st.floats(min_value=0.75, max_value=1.333),
+    seed=st.integers(min_value=0, max_value=2**32 - 1),
+)
+def test_random_resized_crop_respects_scale_and_ratio(h, w, scale, ratio, seed):
+    hypothesis.assume(h != w)
+    # Skip cases where the target crop can't physically fit in the image.
+    area = float(h * w)
+    target_w = int(round(np.sqrt(area * scale * ratio)))
+    target_h = int(round(np.sqrt(area * scale / ratio)))
+    hypothesis.assume(target_w <= w and target_h <= h)
+    cfg = btx.data.transforms.AugmentConfig(
+        crop_scale_min=scale,
+        crop_scale_max=scale,
+        crop_ratio_min=ratio,
+        crop_ratio_max=ratio,
+    )
+    sample = _spatial_sample()
+    sample["img"] = np.zeros((h, w, 3), dtype=np.float32)
+    out = btx.data.transforms.RandomResizedCrop(cfg).random_map(
+        sample, np.random.default_rng(seed=seed)
+    )
+    t = out["t_aug_from_orig"]
+    crop_w = 256.0 / t[0, 0]
+    crop_h = 256.0 / t[1, 1]
+    actual_scale = (crop_w * crop_h) / (w * h)
+    actual_ratio = crop_w / crop_h
+    # Tolerance accounts for rounding crop dims to integers.
+    assert abs(actual_scale - scale) < 0.05, (
+        f"scale: expected {scale:.3f}, got {actual_scale:.3f} (image {w}x{h})"
+    )
+    assert abs(actual_ratio - ratio) < 0.05, (
+        f"ratio: expected {ratio:.3f}, got {actual_ratio:.3f} (image {w}x{h})"
+    )
+
+
 def test_random_resized_crop_is_identity_at_full_scale_square_ratio():
-    cfg = augment.AugmentConfig(
+    cfg = btx.data.transforms.AugmentConfig(
         crop_scale_min=1.0,
         crop_scale_max=1.0,
         crop_ratio_min=1.0,
         crop_ratio_max=1.0,
     )
     sample = _spatial_sample()
-    out = augment.RandomResizedCrop(cfg).random_map(
+    out = btx.data.transforms.RandomResizedCrop(cfg).random_map(
         sample,
         np.random.default_rng(seed=17),
     )
@@ -299,44 +350,54 @@ def test_random_resized_crop_is_identity_at_full_scale_square_ratio():
 
 
 def test_random_flip_prob_zero_is_identity():
-    cfg = augment.AugmentConfig(hflip_prob=0.0, vflip_prob=0.0)
+    cfg = btx.data.transforms.AugmentConfig(hflip_prob=0.0, vflip_prob=0.0)
     sample = _spatial_sample()
-    out = augment.RandomFlip(cfg).random_map(sample, np.random.default_rng(seed=17))
+    out = btx.data.transforms.RandomFlip(cfg).random_map(
+        sample, np.random.default_rng(seed=17)
+    )
     np.testing.assert_allclose(out["t_aug_from_orig"], np.eye(3), atol=1e-6)
 
 
 def test_random_flip_prob_one_applies_hflip_when_vflip_disabled():
-    cfg = augment.AugmentConfig(hflip_prob=1.0, vflip_prob=0.0)
+    cfg = btx.data.transforms.AugmentConfig(hflip_prob=1.0, vflip_prob=0.0)
     sample = _spatial_sample()
-    out = augment.RandomFlip(cfg).random_map(sample, np.random.default_rng(seed=17))
-    expected = augment.get_hflip_affine(size=256)
+    out = btx.data.transforms.RandomFlip(cfg).random_map(
+        sample, np.random.default_rng(seed=17)
+    )
+    expected = btx.data.transforms.get_hflip_affine(size=256)
     np.testing.assert_allclose(out["t_aug_from_orig"], expected, atol=1e-6)
 
 
 def test_random_flip_prob_one_applies_vflip_when_hflip_disabled():
-    cfg = augment.AugmentConfig(hflip_prob=0.0, vflip_prob=1.0)
+    cfg = btx.data.transforms.AugmentConfig(hflip_prob=0.0, vflip_prob=1.0)
     sample = _spatial_sample()
-    out = augment.RandomFlip(cfg).random_map(sample, np.random.default_rng(seed=17))
-    expected = augment.get_vflip_affine(size=256)
+    out = btx.data.transforms.RandomFlip(cfg).random_map(
+        sample, np.random.default_rng(seed=17)
+    )
+    expected = btx.data.transforms.get_vflip_affine(size=256)
     np.testing.assert_allclose(out["t_aug_from_orig"], expected, atol=1e-6)
 
 
 def test_random_rotation_prob_zero_is_identity():
-    cfg = augment.AugmentConfig(rotation_prob=0.0)
+    cfg = btx.data.transforms.AugmentConfig(rotation_prob=0.0)
     sample = _spatial_sample()
-    out = augment.RandomRotation(cfg).random_map(sample, np.random.default_rng(seed=17))
+    out = btx.data.transforms.RandomRotation(cfg).random_map(
+        sample, np.random.default_rng(seed=17)
+    )
     np.testing.assert_allclose(out["t_aug_from_orig"], np.eye(3), atol=1e-6)
 
 
 def test_random_rotation_prob_one_is_non_identity():
-    cfg = augment.AugmentConfig(rotation_prob=1.0)
+    cfg = btx.data.transforms.AugmentConfig(rotation_prob=1.0)
     sample = _spatial_sample()
-    out = augment.RandomRotation(cfg).random_map(sample, np.random.default_rng(seed=17))
+    out = btx.data.transforms.RandomRotation(cfg).random_map(
+        sample, np.random.default_rng(seed=17)
+    )
     assert not np.allclose(out["t_aug_from_orig"], np.eye(3), atol=1e-6)
 
 
 def test_color_jitter_zero_strength_is_noop():
-    cfg = augment.AugmentConfig(
+    cfg = btx.data.transforms.AugmentConfig(
         brightness=0.0,
         contrast=0.0,
         saturation=0.0,
@@ -344,12 +405,14 @@ def test_color_jitter_zero_strength_is_noop():
     )
     sample = _sample()
     sample["img"] = np.full((256, 256, 3), 0.25, dtype=np.float32)
-    out = augment.ColorJitter(cfg).random_map(sample, np.random.default_rng(seed=17))
+    out = btx.data.transforms.ColorJitter(cfg).random_map(
+        sample, np.random.default_rng(seed=17)
+    )
     np.testing.assert_allclose(out["img"], sample["img"], atol=1e-6)
 
 
 def test_color_jitter_prob_zero_is_noop_even_with_nonzero_strength():
-    cfg = augment.AugmentConfig(
+    cfg = btx.data.transforms.AugmentConfig(
         brightness=0.5,
         contrast=0.4,
         saturation=0.4,
@@ -364,12 +427,14 @@ def test_color_jitter_prob_zero_is_noop_even_with_nonzero_strength():
         ],
         dtype=np.float32,
     )
-    out = augment.ColorJitter(cfg).random_map(sample, np.random.default_rng(seed=17))
+    out = btx.data.transforms.ColorJitter(cfg).random_map(
+        sample, np.random.default_rng(seed=17)
+    )
     np.testing.assert_allclose(out["img"], sample["img"], atol=1e-6)
 
 
 def test_color_jitter_nonzero_strength_produces_valid_float_image():
-    cfg = augment.AugmentConfig(
+    cfg = btx.data.transforms.AugmentConfig(
         brightness=0.5,
         contrast=0.4,
         saturation=0.4,
@@ -383,7 +448,9 @@ def test_color_jitter_nonzero_strength_produces_valid_float_image():
         ],
         dtype=np.float32,
     )
-    out = augment.ColorJitter(cfg).random_map(sample, np.random.default_rng(seed=17))
+    out = btx.data.transforms.ColorJitter(cfg).random_map(
+        sample, np.random.default_rng(seed=17)
+    )
     img = out["img"]
     assert isinstance(img, np.ndarray)
     assert img.dtype == np.float32
@@ -406,11 +473,11 @@ def test_resize_tracks_affine_and_keeps_original_points():
         "scalebar_px": np.array([[5.0, 5.0], [25.0, 5.0]], dtype=np.float32),
         "loss_mask": np.array([1.0, 1.0], dtype=np.float32),
     }
-    out = augment.InitAugState(size=256).map(sample)
+    out = btx.data.transforms.InitAugState(size=256).map(sample)
     points_before = np.array(out["points_px"], copy=True)
-    out = augment.Resize(size=256).map(out)
+    out = btx.data.transforms.Resize(size=256).map(out)
 
-    expected = augment.get_crop_resize_affine(
+    expected = btx.data.transforms.get_crop_resize_affine(
         x0=0.0,
         y0=0.0,
         crop_w=200.0,
@@ -424,5 +491,5 @@ def test_resize_tracks_affine_and_keeps_original_points():
 
 def test_normalize_uses_imagenet_mean_std_by_default():
     sample = {"img": np.array([[[0.485, 0.456, 0.406]]], dtype=np.float32)}
-    out = augment.Normalize().map(sample)
+    out = btx.data.transforms.Normalize().map(sample)
     np.testing.assert_allclose(out["img"], np.zeros((1, 1, 3), dtype=np.float32))
