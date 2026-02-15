@@ -17,9 +17,9 @@ Proposed solution: Filtering by annotator may collapse this to 2; otherwise pick
 import dataclasses
 import logging
 import pathlib
+import typing as tp
 
 import beartype
-import grain
 import numpy as np
 import polars as pl
 
@@ -44,6 +44,10 @@ class Config(utils.Config):
     """Whether to include polylines (lines with more than 2 points)."""
     annotators: list[str] = dataclasses.field(default_factory=lambda: ["IsaFluck"])
     """According to Aly, we need to filter by `annotator="IsaFluck"`. See https://hdrimageomics.slack.com/archives/C08T6MCFME1/p1763993618130059?thread_ts=1763935266.449869&cid=C08T6MCFME1 for more context."""
+
+    @property
+    def key(self) -> str:
+        return "beetlepalooza"
 
     @property
     def dataset(self):
@@ -152,19 +156,27 @@ def _trusted_data(cfg: Config) -> pl.DataFrame:
 
 
 @beartype.beartype
-class Dataset(grain.sources.RandomAccessDataSource):
+class Dataset(utils.Dataset):
+    _cfg: Config
+
     def __init__(self, cfg: Config):
-        self.cfg = cfg
+        self._cfg = cfg
         self.df = _trusted_data(cfg)
         self.logger = logging.getLogger("beetlepalooza-ds")
         self.logger.warning("Warning: elytra_width measurements are inaccurate")
+        msg = "BeetlePalooza dataset is empty after annotator/measurement filtering."
+        assert self.df.height > 0, msg
+
+    @property
+    def cfg(self) -> Config:
+        return self._cfg
 
     def __len__(self) -> int:
         return self.df.height
 
-    def __getitem__(self, idx: int) -> utils.Sample:
+    def __getitem__(self, idx: tp.SupportsIndex) -> utils.Sample:
         """Load image and annotations for given index."""
-        row = self.df.row(index=idx, named=True)
+        row = self.df.row(index=int(idx), named=True)
 
         if "part_000" in row["indiv_img_abs_path"]:
             row["indiv_img_rel_path"] = "part_000/" + row["indiv_img_rel_path"]

@@ -62,7 +62,6 @@ import pathlib
 import typing as tp
 
 import beartype
-import grain
 import numpy as np
 import polars as pl
 
@@ -91,6 +90,10 @@ class Config(utils.Config):
     """Minimum group images per species in validation."""
     min_val_beetles: int = 20
     """Minimum beetles per species in validation."""
+
+    @property
+    def key(self) -> str:
+        return "hawaii"
 
     @property
     def dataset(self):
@@ -211,9 +214,11 @@ def _grouped_split(cfg: Config) -> pl.DataFrame:
 
 
 @beartype.beartype
-class Dataset(grain.sources.RandomAccessDataSource):
+class Dataset(utils.Dataset):
+    _cfg: Config
+
     def __init__(self, cfg: Config):
-        self.cfg = cfg
+        self._cfg = cfg
         self.df = _grouped_split(cfg).filter(pl.col("split") == cfg.split)
 
         self.logger = logging.getLogger("hawaii-ds")
@@ -235,12 +240,19 @@ class Dataset(grain.sources.RandomAccessDataSource):
                 )
             )
 
+        msg = f"Hawaii dataset is empty for split={cfg.split}."
+        assert self.df.height > 0, msg
+
+    @property
+    def cfg(self) -> Config:
+        return self._cfg
+
     def __len__(self) -> int:
         return self.df.height
 
-    def __getitem__(self, idx: int) -> utils.Sample:
+    def __getitem__(self, idx: tp.SupportsIndex) -> utils.Sample:
         """Load image and annotations for given index."""
-        row = self.df.row(index=idx, named=True)
+        row = self.df.row(index=int(idx), named=True)
         fpath = self.cfg.hf_root / "individual_specimens" / row["indiv_img_rel_path"]
         assert fpath.is_file(), f"Missing file {fpath}"
 

@@ -14,4 +14,4 @@ clean:
     rm -rf .ruff_cache/
 
 test:
-    uv run pytest --cov btx
+    uv run pytest --cov . tests/

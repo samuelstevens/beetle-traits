@@ -1,0 +1,11 @@
+run_id,name,condition,learning_rate,final_step,final_val_loss
+2hm82vb2,glowing-wood-105,full-aug,0.001,14000,269.9819030761719
+7yhh71ob,comfy-shadow-104,norm-only,0.001,27000,225.2860107421875
+xp1zssn5,jolly-paper-108,full-aug,0.003,14000,307.0766296386719
+ha6twq89,dry-dust-106,norm-only,0.003,28000,283.83306884765625
+lqrbplzu,pious-wave-110,full-aug,0.01,14000,290.9259948730469
+5ujom07p,cerulean-fog-107,norm-only,0.01,27000,220.89224243164062
+a7x0kd8h,smooth-shadow-111,full-aug,0.03,15000,295.0468444824219
+7tf00man,bright-lake-109,norm-only,0.03,28000,228.54257202148438
+s68bsnmw,comfy-donkey-112,full-aug,0.1,14000,1056.9757080078125
+rdj7ayvr,blooming-firefly-113,norm-only,0.1,28000,254.6065673828125

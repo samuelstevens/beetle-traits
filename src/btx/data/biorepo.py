@@ -1,14 +1,12 @@
 import dataclasses
-
 import logging
-import numpy as np
 import pathlib
 import typing as tp
-import polars as pl
-
 
 import beartype
-import grain
+import numpy as np
+import polars as pl
+
 from . import utils
 
 logger = logging.getLogger("biorepo")
@@ -19,7 +17,7 @@ logger = logging.getLogger("biorepo")
 class Config(utils.Config):
     go: bool = True
     """Whether to include this dataset."""
-    hf_root: pathlib.Path = pathlib.Path("data/biorepo")
+    root: pathlib.Path = pathlib.Path("data/biorepo")
     """Path to the dataset root"""
     annotations: pathlib.Path = pathlib.Path("data/biorepo-formatted/annotations.json")
     """Path to the annotations.json file made by running format_biorepo.py."""
@@ -27,9 +25,14 @@ class Config(utils.Config):
     """Which split."""
 
     @property
+    def key(self) -> str:
+        return "biorepo"
+
+    @property
     def dataset(self):
         return Dataset
-    
+
+
 @beartype.beartype
 def _grouped_split(cfg: Config) -> pl.DataFrame:
     """
@@ -63,10 +66,7 @@ def _grouped_split(cfg: Config) -> pl.DataFrame:
 
     # For species with more groups, select up to 2 groups and 10 samples
     for (taxon_id,) in (
-        taxon_group_counts
-        .filter(pl.col("n_groups") > 2)
-        .select("taxon_id")
-        .iter_rows()
+        taxon_group_counts.filter(pl.col("n_groups") > 2).select("taxon_id").iter_rows()
     ):
         taxon_groups = group_stats.filter(pl.col("taxon_id") == taxon_id).filter(
             ~pl.col("rel_group_img_path").is_in(val_group_imgs)
@@ -81,10 +81,7 @@ def _grouped_split(cfg: Config) -> pl.DataFrame:
             .sample(fraction=1.0, with_replacement=False, shuffle=True, seed=0)
             .iter_rows()
         ):
-            if (
-                total_groups >= 2
-                and total_beetles >= 20
-            ):
+            if total_groups >= 2 and total_beetles >= 20:
                 break
 
             val_group_imgs.add(group_img)
@@ -154,38 +151,46 @@ def _grouped_split(cfg: Config) -> pl.DataFrame:
         .then(pl.lit("val"))
         .otherwise(pl.lit("train"))
         .alias("split"),
-        pl.col("rel_group_img_path")
-            .str.strip_prefix("Images/")
-            .str.strip_suffix(".png")
-            .alias("group_img_basename")
+        pl
+        .col("rel_group_img_path")
+        .str.strip_prefix("Images/")
+        .str.strip_suffix(".png")
+        .alias("group_img_basename"),
     )
 
 
 @beartype.beartype
-class Dataset(grain.sources.RandomAccessDataSource):
+class Dataset(utils.Dataset):
+    _cfg: Config
+
     def __init__(self, cfg: Config):
-        self.cfg = cfg
+        self._cfg = cfg
         self.df = _grouped_split(cfg).filter(pl.col("split") == cfg.split)
 
         self.logger = logging.getLogger("biorepo-ds")
 
         # do not include annotations with more than 2 points
         self.df = self.df.filter(
-                pl.col("measurements").map_elements(
-                    lambda measurements: all(
-                        len(m["polyline"]) == 2 for m in measurements
-                    ),
-                    return_dtype=pl.Boolean,
-                )
+            pl.col("measurements").map_elements(
+                lambda measurements: all(len(m["polyline"]) == 2 for m in measurements),
+                return_dtype=pl.Boolean,
             )
-        
+        )
+
+        msg = f"BioRepo dataset is empty for split={cfg.split}."
+        assert self.df.height > 0, msg
+
+    @property
+    def cfg(self) -> Config:
+        return self._cfg
+
     def __len__(self) -> int:
         return self.df.height
-    
-    def __getitem__(self, idx: int) -> utils.Sample:
+
+    def __getitem__(self, idx: tp.SupportsIndex) -> utils.Sample:
         """Load image and annotations for given index."""
-        row = self.df.row(index=idx, named=True)
-        fpath = self.cfg.hf_root / row["rel_individual_img_path"]
+        row = self.df.row(index=int(idx), named=True)
+        fpath = self.cfg.root / row["rel_individual_img_path"]
         assert fpath.is_file(), f"Image not found: {fpath}"
 
         elytra_width = None
@@ -203,17 +208,16 @@ class Dataset(grain.sources.RandomAccessDataSource):
             msg = f"Image {row['rel_group_img_path']} beetle {row['beetle_position']} has no elytra width."
             self.logger.error(msg)
             elytra_width = [0.0, 0.0, 0.0, 0.0]
-            
+
         if elytra_length is None:
             msg = f"Image {row['rel_group_img_path']} beetle {row['beetle_position']} has no elytra length."
             self.logger.error(msg)
             elytra_length = [0.0, 0.0, 0.0, 0.0]
-            
+
         if scalebar is None:
             msg = f"Image {row['rel_group_img_path']} beetle {row['beetle_position']} has no scalebar."
             self.logger.error(msg)
             scalebar = [0.0, 0.0, 1.0, 1.0]
-            
 
         loss_mask = np.array([1.0, 1.0])  # Train on both width and length
         msg = f"Expected loss_mask shape (2,), got {loss_mask.shape}"

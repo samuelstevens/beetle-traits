@@ -245,3 +245,11 @@ How do we (do our best to) avoid convincing ourselves of something not true?
 
 BeetlePalooza vs Hawaii is a good test bed for this.
 So I need to describe the problem precisely.
+
+# 02/13/2025
+
+I am trying to
+
+1. Clean up some code to minimize future tech debt.
+2. Simplify the code as much as possible to make it very hackable
+3. Get most of the complex logic done as soon as possible.
