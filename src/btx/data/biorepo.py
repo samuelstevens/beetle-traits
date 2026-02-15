@@ -225,7 +225,7 @@ class Dataset(utils.Dataset):
         return utils.Sample(
             img_fpath=str(fpath),
             points_px=np.array(elytra_width + elytra_length).reshape(2, 2, 2),
-            scalebar_px=np.array(scalebar),
+            scalebar_px=np.array(scalebar).reshape(2, 2),
             loss_mask=loss_mask,
             beetle_id=row["individual_id"],
             beetle_position=row["beetle_position"],

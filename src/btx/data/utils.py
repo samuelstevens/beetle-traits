@@ -4,7 +4,7 @@ import typing as tp
 import beartype
 import grain
 import numpy as np
-from jaxtyping import Float, jaxtyped
+from jaxtyping import Bool, Float, jaxtyped
 
 
 @beartype.beartype
@@ -35,6 +35,8 @@ class Sample(tp.TypedDict):
     """two points x {x, y}."""
     loss_mask: Float[np.ndarray, "2"]
     """Mask for {width, length} indicating which measurements to train on. 1.0 = train, 0.0 = skip."""
+    scalebar_valid: Bool[np.ndarray, ""]
+    """Whether scalebar is usable for converting pixel errors to cm."""
 
     # Metadata
     beetle_id: str
