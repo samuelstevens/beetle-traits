@@ -6,12 +6,14 @@ app = marimo.App(width="full")
 
 @app.cell
 def _():
+    from pathlib import Path
+
     import marimo as mo
     import matplotlib.pyplot as plt
     import numpy as np
     import polars as pl
     import wandb
-    from pathlib import Path
+
     return Path, mo, np, pl, plt, wandb
 
 
@@ -21,13 +23,11 @@ def _(mo, np, pl, wandb):
     project = "beetle-traits"
     tag = "exp-002-augmentation"
 
-
     def get_condition(tags: list[str]) -> str | None:
         for cond in ("norm-only", "full-aug"):
             if cond in tags:
                 return cond
         return None
-
 
     def normalize_cfg_value(value):
         if value is None:
@@ -37,7 +37,6 @@ def _(mo, np, pl, wandb):
         if isinstance(value, (bool, int, float, str)):
             return value
         return str(value)
-
 
     def flatten_cfg(dct: dict) -> dict[str, object]:
         flat = {}
@@ -51,7 +50,6 @@ def _(mo, np, pl, wandb):
                     continue
                 flat[path] = normalize_cfg_value(value)
         return flat
-
 
     api = wandb.Api()
     runs = list(api.runs(path=f"{entity}/{project}", filters={"tags": {"$in": [tag]}}))
@@ -112,14 +110,17 @@ def _(mo, np, pl, wandb):
             col for col in history_df.columns if col not in set(id_cols + meta_cols)
         ]
         steps_df = (
-            history_df.group_by(id_cols, maintain_order=True)
+            history_df
+            .group_by(id_cols, maintain_order=True)
             .agg(
                 [pl.col(col).first().alias(col) for col in meta_cols]
                 + [pl.col(col).max().alias(col) for col in metric_cols]
             )
-            .sort(
-                [col for col in ["condition", "seed", "step"] if col in history_df.columns]
-            )
+            .sort([
+                col
+                for col in ["condition", "seed", "step"]
+                if col in history_df.columns
+            ])
         )
     return (steps_df,)
 
@@ -140,9 +141,11 @@ def _(steps_df):
             "val_hawaii_loss",
             "val_biorepo_loss",
         ]
-        preview_df = steps_df.select([col for col in cols if col in steps_df.columns]).sort(
-            [col for col in ["condition", "seed", "step"] if col in steps_df.columns]
-        )
+        preview_df = steps_df.select([
+            col for col in cols if col in steps_df.columns
+        ]).sort([
+            col for col in ["condition", "seed", "step"] if col in steps_df.columns
+        ])
 
     preview_df
     return
@@ -165,7 +168,8 @@ def _(mo, pl, steps_df):
     mo.stop(not _val_cols, mo.md("No validation metric columns found in `steps_df`."))
 
     _latest_val_df = (
-        steps_df.filter(pl.col(_val_cols[0]).is_not_null())
+        steps_df
+        .filter(pl.col(_val_cols[0]).is_not_null())
         .sort(["run_id", "step"])
         .group_by("run_id")
         .agg(
@@ -179,7 +183,8 @@ def _(mo, pl, steps_df):
     )
 
     _latest_by_lr_df = (
-        _latest_val_df.group_by("learning_rate")
+        _latest_val_df
+        .group_by("learning_rate")
         .agg(
             pl.len().alias("n_runs"),
             *[pl.col(col).mean().alias(f"mean_{col}") for col in _val_cols],
@@ -194,10 +199,13 @@ def _(mo, pl, steps_df):
         _speed_by_cond_workers_df = pl.DataFrame()
     else:
         _speed_pts_df = (
-            steps_df.filter(pl.col("_runtime").is_not_null())
+            steps_df
+            .filter(pl.col("_runtime").is_not_null())
             .sort(["run_id", "step"])
             .with_columns(
-                (pl.col("step") - pl.col("step").shift(1).over("run_id")).alias("dstep"),
+                (pl.col("step") - pl.col("step").shift(1).over("run_id")).alias(
+                    "dstep"
+                ),
                 (pl.col("_runtime") - pl.col("_runtime").shift(1).over("run_id")).alias(
                     "druntime"
                 ),
@@ -207,7 +215,8 @@ def _(mo, pl, steps_df):
         )
 
         _speed_by_run_df = (
-            _speed_pts_df.group_by("run_id")
+            _speed_pts_df
+            .group_by("run_id")
             .agg(
                 pl.col("name").last().alias("name"),
                 pl.col("condition").last().alias("condition"),
@@ -220,38 +229,44 @@ def _(mo, pl, steps_df):
             .sort(["condition", "n_workers", "learning_rate", "name"])
         )
         _speed_by_cond_df = (
-            _speed_by_run_df.group_by("condition")
+            _speed_by_run_df
+            .group_by("condition")
             .agg(
                 pl.len().alias("n_runs"),
                 pl.col("mean_steps_per_sec").mean().alias("mean_steps_per_sec"),
-                pl.col("mean_steps_per_sec").std().alias("std_steps_per_sec_across_runs"),
+                pl
+                .col("mean_steps_per_sec")
+                .std()
+                .alias("std_steps_per_sec_across_runs"),
             )
             .sort("condition")
         )
         _speed_by_cond_workers_df = (
-            _speed_by_run_df.group_by(["condition", "n_workers"])
+            _speed_by_run_df
+            .group_by(["condition", "n_workers"])
             .agg(
                 pl.len().alias("n_runs"),
                 pl.col("mean_steps_per_sec").mean().alias("mean_steps_per_sec"),
-                pl.col("mean_steps_per_sec").std().alias("std_steps_per_sec_across_runs"),
+                pl
+                .col("mean_steps_per_sec")
+                .std()
+                .alias("std_steps_per_sec_across_runs"),
             )
             .sort(["condition", "n_workers"])
         )
 
-    mo.vstack(
-        [
-            mo.md("### Latest validation metrics per run"),
-            _latest_val_df,
-            mo.md("### Latest validation metrics grouped by learning rate"),
-            _latest_by_lr_df,
-            mo.md("### Throughput per run (`steps/sec`)"),
-            _speed_by_run_df,
-            mo.md("### Throughput grouped by augmentation group"),
-            _speed_by_cond_df,
-            mo.md("### Throughput grouped by augmentation group and n_workers"),
-            _speed_by_cond_workers_df,
-        ]
-    )
+    mo.vstack([
+        mo.md("### Latest validation metrics per run"),
+        _latest_val_df,
+        mo.md("### Latest validation metrics grouped by learning rate"),
+        _latest_by_lr_df,
+        mo.md("### Throughput per run (`steps/sec`)"),
+        _speed_by_run_df,
+        mo.md("### Throughput grouped by augmentation group"),
+        _speed_by_cond_df,
+        mo.md("### Throughput grouped by augmentation group and n_workers"),
+        _speed_by_cond_workers_df,
+    ])
     return
 
 
@@ -275,7 +290,8 @@ def _(Path, np, pl, plt, steps_df):
         "full-aug": ":",
     }
     lr_vals = (
-        steps_df.select("learning_rate")
+        steps_df
+        .select("learning_rate")
         .drop_nulls()
         .unique()
         .sort("learning_rate")
@@ -296,7 +312,6 @@ def _(Path, np, pl, plt, steps_df):
     else:
         lr_norm = None
 
-
     def _get_lr_color(lr: float | None):
         if lr is None or lr_norm is None:
             return "#7f7f7f"
@@ -305,9 +320,7 @@ def _(Path, np, pl, plt, steps_df):
             return "#7f7f7f"
         return lr_cmap(lr_norm(np.log10(lr_float)))
 
-
     ema_beta = 0.9
-
 
     def _ema_np(y: np.ndarray, *, beta: float) -> np.ndarray:
         y = np.asarray(y, dtype=float)
@@ -319,9 +332,7 @@ def _(Path, np, pl, plt, steps_df):
             y_ema[i] = beta * y_ema[i - 1] + (1.0 - beta) * y[i]
         return y_ema
 
-
     _loss_rows: list[dict[str, object]] = []
-
 
     def _plot_loss_metric(ax, metric: str, title: str) -> bool:
         if metric not in steps_df.columns:
@@ -340,7 +351,8 @@ def _(Path, np, pl, plt, steps_df):
         run_ids = metric_df.get_column("run_id").unique().to_list()
         for run_id in run_ids:
             run_df = (
-                metric_df.filter(metric_df["run_id"] == run_id)
+                metric_df
+                .filter(metric_df["run_id"] == run_id)
                 .sort("step")
                 .filter(pl.col("step") <= max_steps)
             )
@@ -362,18 +374,16 @@ def _(Path, np, pl, plt, steps_df):
                 y_vals,
                 strict=False,
             ):
-                _loss_rows.append(
-                    {
-                        "panel": metric,
-                        "run_id": run_id,
-                        "condition": condition,
-                        "learning_rate": lr,
-                        "step": int(_step),
-                        "value_raw": float(_y_raw),
-                        "value_plot": float(_y_plot),
-                        "smoothed": _smoothed,
-                    }
-                )
+                _loss_rows.append({
+                    "panel": metric,
+                    "run_id": run_id,
+                    "condition": condition,
+                    "learning_rate": lr,
+                    "step": int(_step),
+                    "value_raw": float(_y_raw),
+                    "value_plot": float(_y_plot),
+                    "smoothed": _smoothed,
+                })
 
             ax.plot(
                 run_df.get_column("step").to_numpy(),
@@ -390,7 +400,6 @@ def _(Path, np, pl, plt, steps_df):
         ax.grid(alpha=0.25)
         ax.spines[["right", "top"]].set_visible(False)
         return True
-
 
     def _plot_loss_gap(
         ax,
@@ -417,7 +426,8 @@ def _(Path, np, pl, plt, steps_df):
         run_ids = gap_df.get_column("run_id").unique().to_list()
         for run_id in run_ids:
             run_df = (
-                gap_df.filter(gap_df["run_id"] == run_id)
+                gap_df
+                .filter(gap_df["run_id"] == run_id)
                 .sort("step")
                 .filter(pl.col("step") <= max_steps)
             )
@@ -439,18 +449,16 @@ def _(Path, np, pl, plt, steps_df):
                 gap_vals,
                 strict=False,
             ):
-                _loss_rows.append(
-                    {
-                        "panel": "val_minus_train",
-                        "run_id": run_id,
-                        "condition": condition,
-                        "learning_rate": lr,
-                        "step": int(_step),
-                        "value_raw": float(_gap_raw),
-                        "value_plot": float(_gap_plot),
-                        "smoothed": True,
-                    }
-                )
+                _loss_rows.append({
+                    "panel": "val_minus_train",
+                    "run_id": run_id,
+                    "condition": condition,
+                    "learning_rate": lr,
+                    "step": int(_step),
+                    "value_raw": float(_gap_raw),
+                    "value_plot": float(_gap_plot),
+                    "smoothed": True,
+                })
 
             ax.plot(
                 run_df.get_column("step").to_numpy(),
@@ -486,7 +494,6 @@ def _(Path, np, pl, plt, steps_df):
         ax.grid(alpha=0.25)
         ax.spines[["right", "top"]].set_visible(False)
         return True
-
 
     # Row 0: train (no per-dataset split) — loss left, line_err_cm right
     _plot_loss_metric(axes[0, 0], "train_loss", "Train loss")
@@ -607,7 +614,8 @@ def _(np, pl, plt, steps_df):
         _lr_ax.spines[["right", "top"]].set_visible(False)
     else:
         _lr_plot_df = (
-            steps_df.filter(
+            steps_df
+            .filter(
                 pl.col("learning_rate").is_not_null()
                 & pl.col("step").is_not_null()
                 & pl.col("val_hawaii_loss").is_not_null()
@@ -640,16 +648,17 @@ def _(np, pl, plt, steps_df):
             _lr_cmap = plt.get_cmap("plasma")
 
             _lr_conditions = (
-                _lr_plot_df.select("condition")
+                _lr_plot_df
+                .select("condition")
                 .unique()
                 .sort("condition")
                 .get_column("condition")
                 .to_list()
             )
             for _lr_condition in _lr_conditions:
-                _lr_cond_df = _lr_plot_df.filter(pl.col("condition") == _lr_condition).sort(
-                    "learning_rate"
-                )
+                _lr_cond_df = _lr_plot_df.filter(
+                    pl.col("condition") == _lr_condition
+                ).sort("learning_rate")
                 _lr_marker = _lr_marker_map.get(_lr_condition, "D")
 
                 _lr_ax.scatter(
@@ -675,19 +684,19 @@ def _(np, pl, plt, steps_df):
             _lr_sm = plt.cm.ScalarMappable(norm=_lr_norm, cmap=_lr_cmap)
             _lr_sm.set_array([])
             _lr_fig.colorbar(_lr_sm, ax=_lr_ax, label="Final step")
-            _lr_export_df = _lr_plot_df.select(
-                [
-                    "run_id",
-                    "name",
-                    "condition",
-                    "learning_rate",
-                    "final_step",
-                    "final_val_loss",
-                ]
-            )
+            _lr_export_df = _lr_plot_df.select([
+                "run_id",
+                "name",
+                "condition",
+                "learning_rate",
+                "final_step",
+                "final_val_loss",
+            ])
 
     _lr_export_df.write_csv(_out_dpath / "lr_vs_final_val_loss.csv")
-    _lr_fig.savefig(_out_dpath / "lr_vs_final_val_loss.png", dpi=200, bbox_inches="tight")
+    _lr_fig.savefig(
+        _out_dpath / "lr_vs_final_val_loss.png", dpi=200, bbox_inches="tight"
+    )
     _lr_fig
     return
 
@@ -726,12 +735,10 @@ def _(np, pl, plt, steps_df):
         _speed_ax.set_ylabel("steps/sec")
         _speed_ax.spines[["right", "top"]].set_visible(False)
     else:
-        _speed_df = steps_df.filter(steps_df["_runtime"].is_not_null()).sort(
-            [
-                "run_id",
-                "step",
-            ]
-        )
+        _speed_df = steps_df.filter(steps_df["_runtime"].is_not_null()).sort([
+            "run_id",
+            "step",
+        ])
         if _speed_df.is_empty():
             _speed_ax.set_title("Steps/sec vs step (no runtime data)")
             _speed_ax.set_xlabel("Step")
@@ -741,9 +748,9 @@ def _(np, pl, plt, steps_df):
             _speed_rows: list[dict[str, object]] = []
             _speed_run_ids = _speed_df.get_column("run_id").unique().to_list()
             for _speed_run_id in _speed_run_ids:
-                _speed_run_df = _speed_df.filter(_speed_df["run_id"] == _speed_run_id).sort(
-                    "step"
-                )
+                _speed_run_df = _speed_df.filter(
+                    _speed_df["run_id"] == _speed_run_id
+                ).sort("step")
                 _speed_first_row = _speed_run_df.head(1).to_dicts()[0]
                 _speed_condition = _speed_first_row.get("condition")
                 if _speed_condition is None:
@@ -763,14 +770,12 @@ def _(np, pl, plt, steps_df):
                 _speed_y = _speed_dstep[_speed_keep] / _speed_druntime[_speed_keep]
 
                 for _speed_step, _speed_val in zip(_speed_x, _speed_y, strict=False):
-                    _speed_rows.append(
-                        {
-                            "condition": _speed_condition,
-                            "n_workers": int(_speed_workers),
-                            "step": int(_speed_step),
-                            "steps_per_sec": float(_speed_val),
-                        }
-                    )
+                    _speed_rows.append({
+                        "condition": _speed_condition,
+                        "n_workers": int(_speed_workers),
+                        "step": int(_speed_step),
+                        "steps_per_sec": float(_speed_val),
+                    })
 
             if not _speed_rows:
                 _speed_ax.set_title(
@@ -782,26 +787,24 @@ def _(np, pl, plt, steps_df):
             else:
                 _speed_points_df = pl.DataFrame(_speed_rows)
                 _speed_agg_df = (
-                    _speed_points_df.group_by(
-                        ["condition", "n_workers", "step"], maintain_order=True
-                    )
+                    _speed_points_df
+                    .group_by(["condition", "n_workers", "step"], maintain_order=True)
                     .agg(
                         pl.col("steps_per_sec").mean().alias("steps_per_sec_mean"),
                         pl.col("steps_per_sec").std().alias("steps_per_sec_std"),
                     )
                     .sort(["condition", "n_workers", "step"])
                 )
-                _speed_export_df = _speed_agg_df.select(
-                    [
-                        "condition",
-                        "n_workers",
-                        "step",
-                        "steps_per_sec_mean",
-                        "steps_per_sec_std",
-                    ]
-                )
+                _speed_export_df = _speed_agg_df.select([
+                    "condition",
+                    "n_workers",
+                    "step",
+                    "steps_per_sec_mean",
+                    "steps_per_sec_std",
+                ])
                 _speed_workers_vals = (
-                    _speed_agg_df.select("n_workers")
+                    _speed_agg_df
+                    .select("n_workers")
                     .drop_nulls()
                     .unique()
                     .sort("n_workers")
@@ -814,7 +817,8 @@ def _(np, pl, plt, steps_df):
                     for i, _n_workers in enumerate(_speed_workers_vals)
                 }
                 _speed_groups = (
-                    _speed_agg_df.select(["condition", "n_workers"])
+                    _speed_agg_df
+                    .select(["condition", "n_workers"])
                     .unique()
                     .sort(["condition", "n_workers"])
                     .to_dicts()
@@ -827,8 +831,12 @@ def _(np, pl, plt, steps_df):
                         & (pl.col("n_workers") == _speed_workers)
                     ).sort("step")
                     _speed_x = _speed_cond_df.get_column("step").to_numpy()
-                    _speed_mean = _speed_cond_df.get_column("steps_per_sec_mean").to_numpy()
-                    _speed_std = _speed_cond_df.get_column("steps_per_sec_std").to_numpy()
+                    _speed_mean = _speed_cond_df.get_column(
+                        "steps_per_sec_mean"
+                    ).to_numpy()
+                    _speed_std = _speed_cond_df.get_column(
+                        "steps_per_sec_std"
+                    ).to_numpy()
                     _speed_color = _speed_color_map.get(_speed_cond, "#7f7f7f")
                     _speed_style = _speed_workers_style_map.get(_speed_workers, "-")
 
@@ -853,7 +861,9 @@ def _(np, pl, plt, steps_df):
                             linewidth=0,
                         )
 
-                _speed_ax.set_title("Training throughput (mean steps/sec +/- std) vs step")
+                _speed_ax.set_title(
+                    "Training throughput (mean steps/sec +/- std) vs step"
+                )
                 _speed_ax.set_xlabel("Step")
                 _speed_ax.set_ylabel("steps/sec")
                 _speed_ax.grid(alpha=0.25)
@@ -921,7 +931,8 @@ def _(np, pl, plt, steps_df):
         "full-aug": ":",
     }
     _cm_lr_vals = (
-        steps_df.select("learning_rate")
+        steps_df
+        .select("learning_rate")
         .drop_nulls()
         .unique()
         .sort("learning_rate")
@@ -942,7 +953,6 @@ def _(np, pl, plt, steps_df):
     else:
         _cm_lr_norm = None
 
-
     def _get_cm_lr_color(_cm_lr: float | None):
         if _cm_lr is None or _cm_lr_norm is None:
             return "#7f7f7f"
@@ -951,9 +961,7 @@ def _(np, pl, plt, steps_df):
             return "#7f7f7f"
         return _cm_lr_cmap(_cm_lr_norm(np.log10(_cm_lr_float)))
 
-
     _cm_ema_beta = 0.9
-
 
     def _ema_cm_np(_cm_y: np.ndarray, *, _cm_beta: float) -> np.ndarray:
         _cm_y = np.asarray(_cm_y, dtype=float)
@@ -967,9 +975,7 @@ def _(np, pl, plt, steps_df):
             )
         return _cm_y_ema
 
-
     _cm_rows: list[dict[str, object]] = []
-
 
     def _plot_cm_metric(_cm_ax, _cm_metric: str, _cm_title: str) -> bool:
         if _cm_metric not in steps_df.columns:
@@ -998,9 +1004,9 @@ def _(np, pl, plt, steps_df):
 
         _cm_run_ids = _cm_metric_df.get_column("run_id").unique().to_list()
         for _cm_run_id in _cm_run_ids:
-            _cm_run_df = _cm_metric_df.filter(_cm_metric_df["run_id"] == _cm_run_id).sort(
-                "step"
-            )
+            _cm_run_df = _cm_metric_df.filter(
+                _cm_metric_df["run_id"] == _cm_run_id
+            ).sort("step")
             _cm_first_row = _cm_run_df.head(1).to_dicts()[0]
             _cm_condition = _cm_first_row.get("condition")
             _cm_lr = _cm_first_row.get("learning_rate")
@@ -1019,18 +1025,16 @@ def _(np, pl, plt, steps_df):
                 _cm_y_vals,
                 strict=False,
             ):
-                _cm_rows.append(
-                    {
-                        "panel": _cm_metric,
-                        "run_id": _cm_run_id,
-                        "condition": _cm_condition,
-                        "learning_rate": _cm_lr,
-                        "step": int(_cm_step),
-                        "value_raw": float(_cm_raw),
-                        "value_plot": float(_cm_plot),
-                        "smoothed": _cm_smoothed,
-                    }
-                )
+                _cm_rows.append({
+                    "panel": _cm_metric,
+                    "run_id": _cm_run_id,
+                    "condition": _cm_condition,
+                    "learning_rate": _cm_lr,
+                    "step": int(_cm_step),
+                    "value_raw": float(_cm_raw),
+                    "value_plot": float(_cm_plot),
+                    "smoothed": _cm_smoothed,
+                })
             _cm_ax.plot(
                 _cm_run_df.get_column("step").to_numpy(),
                 _cm_y_vals,
@@ -1046,7 +1050,6 @@ def _(np, pl, plt, steps_df):
         _cm_ax.grid(alpha=0.25)
         _cm_ax.spines[["right", "top"]].set_visible(False)
         return True
-
 
     # Row 0: train (no per-dataset split) -- length_line_err left, point_err right
     _plot_cm_metric(
@@ -1064,7 +1067,6 @@ def _(np, pl, plt, steps_df):
         "val_biorepo_length_line_err_cm",
         "Val length line err (cm, BioRepo)",
     )
-
 
     def _plot_cm_gap(
         _cm_gap_ax,
@@ -1096,9 +1098,9 @@ def _(np, pl, plt, steps_df):
 
         _cm_gap_run_ids = _cm_gap_df.get_column("run_id").unique().to_list()
         for _cm_gap_run_id in _cm_gap_run_ids:
-            _cm_gap_run_df = _cm_gap_df.filter(_cm_gap_df["run_id"] == _cm_gap_run_id).sort(
-                "step"
-            )
+            _cm_gap_run_df = _cm_gap_df.filter(
+                _cm_gap_df["run_id"] == _cm_gap_run_id
+            ).sort("step")
             _cm_gap_first_row = _cm_gap_run_df.head(1).to_dicts()[0]
             _cm_gap_condition = _cm_gap_first_row.get("condition")
             _cm_gap_lr = _cm_gap_first_row.get("learning_rate")
@@ -1117,18 +1119,16 @@ def _(np, pl, plt, steps_df):
                 _cm_gap_vals,
                 strict=False,
             ):
-                _cm_rows.append(
-                    {
-                        "panel": "val_minus_train_cm",
-                        "run_id": _cm_gap_run_id,
-                        "condition": _cm_gap_condition,
-                        "learning_rate": _cm_gap_lr,
-                        "step": int(_cm_step),
-                        "value_raw": float(_cm_raw),
-                        "value_plot": float(_cm_plot),
-                        "smoothed": True,
-                    }
-                )
+                _cm_rows.append({
+                    "panel": "val_minus_train_cm",
+                    "run_id": _cm_gap_run_id,
+                    "condition": _cm_gap_condition,
+                    "learning_rate": _cm_gap_lr,
+                    "step": int(_cm_step),
+                    "value_raw": float(_cm_raw),
+                    "value_plot": float(_cm_plot),
+                    "smoothed": True,
+                })
 
             _cm_gap_ax.plot(
                 _cm_gap_run_df.get_column("step").to_numpy(),
@@ -1164,7 +1164,6 @@ def _(np, pl, plt, steps_df):
         _cm_gap_ax.grid(alpha=0.25)
         _cm_gap_ax.spines[["right", "top"]].set_visible(False)
         return True
-
 
     # Row 2: gap -- Hawaii left, BioRepo right
     _plot_cm_gap(
