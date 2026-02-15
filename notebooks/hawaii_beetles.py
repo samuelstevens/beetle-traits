@@ -212,8 +212,8 @@ def _(Image, ImageDraw, final_df, hf_root, mo, pl):
         group_img = Image.open(hf_root / group_img_rel_path)
         ind_img = Image.open(hf_root / ind_img_rel_path)
 
-        crop_box = [x, y, x + width, y + height]
-        cropped_img = group_img.crop(crop_box)
+        # crop_box = [x, y, x + width, y + height]
+        # cropped_img = group_img.crop(crop_box)
 
         print(group_img.size)
 
