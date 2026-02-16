@@ -3,8 +3,10 @@ import pathlib
 
 import beartype
 import chex
+import einops
 import equinox as eqx
 import jax
+import jax.nn as jnn
 from jaxtyping import Array, Float, jaxtyped
 
 from . import dinov3
@@ -63,6 +65,8 @@ class Model(eqx.Module):
     """GroupNorm after second upsampling block."""
     out_conv: eqx.nn.Conv2d
     """Final `1x1` projection from decoder channels to endpoint heatmaps."""
+    heatmap_size: int
+    """Expected side length for decoder output heatmaps."""
 
     def __init__(self, cfg: Heatmap, *, key: chex.PRNGKey):
         """Initialize the heatmap decoder and load frozen DINOv3 weights.
@@ -105,6 +109,7 @@ class Model(eqx.Module):
             padding=0,
             key=k3,
         )
+        self.heatmap_size = cfg.heatmap_size
 
     def __call__(
         self, x_hwc: Float[Array, "h w c"], *, key: chex.PRNGKey | None = None
@@ -117,11 +122,51 @@ class Model(eqx.Module):
 
         Returns:
             Heatmap logits with channel-first shape `[4, 64, 64]`.
-
-        Notes:
-            This is intentionally a skeleton implementation and will be completed
-            during the TDD phase.
         """
-        _ = x_hwc
+        msg = f"Expected image shape (H, W, 3), got {x_hwc.shape}"
+        assert x_hwc.ndim == 3 and x_hwc.shape[2] == 3, msg
+        h_img, w_img, _ = x_hwc.shape
+        patch_size = self.vit.cfg.patch_size
+        msg = (
+            "Expected image spatial size to be divisible by ViT patch_size, got "
+            f"({h_img}, {w_img}) and patch_size={patch_size}"
+        )
+        assert h_img % patch_size == 0 and w_img % patch_size == 0, msg
         _ = key
-        raise NotImplementedError("Heatmap model forward pass is not implemented yet.")
+
+        x_chw = einops.rearrange(x_hwc, "h w c -> c h w")
+        vit_out = self.vit(x_chw)
+        patch_nd = vit_out["patches"]
+        msg = f"Expected patch tokens shape (N, D), got {patch_nd.shape}"
+        assert patch_nd.ndim == 2, msg
+
+        grid_h = h_img // patch_size
+        grid_w = w_img // patch_size
+        expected_n_patches = grid_h * grid_w
+        n_patches = patch_nd.shape[0]
+        msg = (
+            "Expected patch count implied by ViT config, got "
+            f"n_patches={n_patches} and expected_n_patches={expected_n_patches}"
+        )
+        assert n_patches == expected_n_patches, msg
+        msg = f"Expected square patch grid, got ({grid_h}, {grid_w})"
+        assert grid_h == grid_w, msg
+
+        feat_dhw = einops.rearrange(patch_nd, "(h w) d -> d h w", h=grid_h, w=grid_w)
+        x = self.deconv1(feat_dhw)
+        x = jnn.relu(self.gn1(x))
+        x = self.deconv2(x)
+        x = jnn.relu(self.gn2(x))
+        logits_chw = self.out_conv(x)
+
+        msg = (
+            "Expected logits shape "
+            f"({self.out_conv.out_channels}, {self.heatmap_size}, {self.heatmap_size}), "
+            f"got {logits_chw.shape}"
+        )
+        assert logits_chw.shape == (
+            self.out_conv.out_channels,
+            self.heatmap_size,
+            self.heatmap_size,
+        ), msg
+        return logits_chw
