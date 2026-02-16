@@ -138,6 +138,16 @@ def test_objective_config_asserts_on_invalid_fields():
         _ = train.ObjectiveConfig(kind="heatmap", sigma=0.0)
 
 
+def test_objective_config_defaults_heatmap_loss_to_ce():
+    cfg = train.ObjectiveConfig(kind="heatmap")
+    assert cfg.heatmap_loss == "ce"
+
+
+def test_objective_config_asserts_on_invalid_heatmap_loss():
+    with np.testing.assert_raises_regex(AssertionError, "heatmap_loss"):
+        _ = train.ObjectiveConfig(kind="heatmap", heatmap_loss="bad")
+
+
 def test_loss_and_aux_asserts_on_missing_required_batch_key():
     model = ConstantModel(pred_l22=jnp.zeros((2, 2, 2), dtype=jnp.float32))
     diff_model, static_model = _partition_model(model)
@@ -474,6 +484,59 @@ def test_loss_and_aux_heatmap_weights_global_loss_by_active_elements():
         pred0, tgt1, batch["loss_mask"][1], cfg=heatmap_cfg
     )
     active = np.array([2.0 * 64 * 64, 1.0 * 64 * 64], dtype=np.float32)
+    expected_loss = (float(loss0) * active[0] + float(loss1) * active[1]) / float(
+        active.sum()
+    )
+
+    np.testing.assert_allclose(np.asarray(aux.sample_loss), np.array([loss0, loss1]))
+    np.testing.assert_allclose(np.asarray(loss), np.array(expected_loss), rtol=1e-5)
+
+
+def test_loss_and_aux_heatmap_ce_weights_global_loss_by_active_lines():
+    model = ConstantHeatmapModel(pred_chw=jnp.zeros((4, 64, 64), dtype=jnp.float32))
+    diff_model, static_model = _partition_model(model)
+    batch = {
+        "img": jnp.zeros((2, 256, 256, 3), dtype=jnp.float32),
+        "tgt": jnp.array(
+            [
+                [[[40.0, 40.0], [80.0, 80.0]], [[120.0, 120.0], [160.0, 160.0]]],
+                [[[32.0, 64.0], [96.0, 64.0]], [[128.0, 192.0], [192.0, 192.0]]],
+            ],
+            dtype=jnp.float32,
+        ),
+        "points_px": jnp.zeros((2, 2, 2, 2), dtype=jnp.float32),
+        "scalebar_px": jnp.array(
+            [[[0.0, 0.0], [10.0, 0.0]], [[0.0, 0.0], [10.0, 0.0]]],
+            dtype=jnp.float32,
+        ),
+        "loss_mask": jnp.array([[1.0, 1.0], [1.0, 0.0]], dtype=jnp.float32),
+        "scalebar_valid": jnp.array([False, False]),
+        "t_orig_from_aug": jnp.tile(
+            jnp.eye(3, dtype=jnp.float32)[None, :, :], (2, 1, 1)
+        ),
+        "oob_points_frac": jnp.array([0.0, 0.0], dtype=jnp.float32),
+    }
+    objective_cfg = train.ObjectiveConfig(
+        kind="heatmap",
+        heatmap_size=64,
+        sigma=2.0,
+        heatmap_loss="ce",
+    )
+
+    loss, aux = train.loss_and_aux(
+        diff_model, static_model, batch, objective_cfg=objective_cfg
+    )
+    heatmap_cfg = btx.heatmap.Config(image_size=256, heatmap_size=64, sigma=2.0)
+    pred0 = jnp.zeros((4, 64, 64), dtype=jnp.float32)
+    tgt0 = btx.heatmap.make_targets(batch["tgt"][0], cfg=heatmap_cfg)
+    tgt1 = btx.heatmap.make_targets(batch["tgt"][1], cfg=heatmap_cfg)
+    loss0 = btx.heatmap.heatmap_ce_loss(
+        pred0, tgt0, batch["loss_mask"][0], cfg=heatmap_cfg
+    )
+    loss1 = btx.heatmap.heatmap_ce_loss(
+        pred0, tgt1, batch["loss_mask"][1], cfg=heatmap_cfg
+    )
+    active = np.array([2.0, 1.0], dtype=np.float32)
     expected_loss = (float(loss0) * active[0] + float(loss1) * active[1]) / float(
         active.sum()
     )
