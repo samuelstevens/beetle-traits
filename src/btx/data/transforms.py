@@ -65,29 +65,6 @@ class AugmentConfig:
 
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
-class HeatmapTargetConfig:
-    """Configuration for optional Gaussian endpoint heatmap targets."""
-
-    go: bool = False
-    """Whether to generate endpoint Gaussian heatmap targets."""
-    heatmap_size: int = 64
-    """Square target heatmap size in pixels."""
-    sigma: float = 2.0
-    """Gaussian standard deviation in heatmap pixels."""
-    in_key: str = "tgt"
-    """Input key containing endpoint coordinates with shape `(2, 2, 2)`."""
-    out_key: str = "heatmap_tgt"
-    """Output key where generated endpoint heatmaps are stored."""
-
-    def __post_init__(self):
-        msg = f"Expected positive heatmap_size, got {self.heatmap_size}"
-        assert self.heatmap_size > 0, msg
-        msg = f"Expected positive sigma, got {self.sigma}"
-        assert self.sigma > 0.0, msg
-
-
-@beartype.beartype
-@dataclasses.dataclass(frozen=True)
 class DecodeRGB(grain.transforms.Map):
     def map(self, element: object) -> object:
         sample = _sample_dct(element)
@@ -607,22 +584,18 @@ def make_transforms(
     cfg: AugmentConfig,
     *,
     is_train: bool,
-    heatmap_tgt_cfg: HeatmapTargetConfig | None = None,
 ) -> list[grain.transforms.Map | grain.transforms.RandomMap]:
     """Build the Grain transform list for train or eval.
 
     Args:
         cfg: Augmentation settings, target sizing, and optional normalization controls.
         is_train: Whether to build the train pipeline. If false, build the eval pipeline.
-        heatmap_tgt_cfg: Optional Gaussian heatmap target settings. If enabled, appends `GaussianHeatmap` after `FinalizeTargets`.
 
     Returns:
         Ordered `grain.transforms.Map`/`RandomMap` transforms to apply to each sample.
 
-    The pipeline always starts with `DecodeRGB` and `InitAugState` and always applies `FinalizeTargets` before optional normalization. If heatmap targets are enabled, `GaussianHeatmap` is applied after `FinalizeTargets`. If `is_train` and `cfg.go` are both true, the pipeline includes stochastic spatial/color augmentation (`RandomResizedCrop`, `RandomFlip`, `RandomRotation`, `ColorJitter`). Otherwise it uses deterministic `Resize`.
+    The pipeline always starts with `DecodeRGB` and `InitAugState` and always applies `FinalizeTargets` before optional normalization. If `is_train` and `cfg.go` are both true, the pipeline includes stochastic spatial/color augmentation (`RandomResizedCrop`, `RandomFlip`, `RandomRotation`, `ColorJitter`). Otherwise it uses deterministic `Resize`.
     """
-    if heatmap_tgt_cfg is None:
-        heatmap_tgt_cfg = HeatmapTargetConfig()
 
     tfms: list[grain.transforms.Map | grain.transforms.RandomMap] = [
         DecodeRGB(),
@@ -631,16 +604,6 @@ def make_transforms(
     if not is_train or not cfg.go:
         tfms.append(Resize(size=cfg.size))
         tfms.append(FinalizeTargets(cfg=cfg))
-        if heatmap_tgt_cfg.go:
-            tfms.append(
-                GaussianHeatmap(
-                    image_size=cfg.size,
-                    heatmap_size=heatmap_tgt_cfg.heatmap_size,
-                    sigma=heatmap_tgt_cfg.sigma,
-                    in_key=heatmap_tgt_cfg.in_key,
-                    out_key=heatmap_tgt_cfg.out_key,
-                )
-            )
         if cfg.normalize:
             tfms.append(Normalize())
         return tfms
@@ -655,16 +618,6 @@ def make_transforms(
         ColorJitter(cfg=cfg),
         FinalizeTargets(cfg=cfg),
     ])
-    if heatmap_tgt_cfg.go:
-        tfms.append(
-            GaussianHeatmap(
-                image_size=cfg.size,
-                heatmap_size=heatmap_tgt_cfg.heatmap_size,
-                sigma=heatmap_tgt_cfg.sigma,
-                in_key=heatmap_tgt_cfg.in_key,
-                out_key=heatmap_tgt_cfg.out_key,
-            )
-        )
     if cfg.normalize:
         tfms.append(Normalize())
     return tfms
