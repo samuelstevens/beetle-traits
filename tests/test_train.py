@@ -98,6 +98,51 @@ def test_get_transforms_can_disable_normalization():
     ]
 
 
+def test_get_transforms_includes_gaussian_heatmap_when_enabled():
+    cfg = btx.data.transforms.AugmentConfig()
+    heatmap_cfg = btx.data.transforms.HeatmapTargetConfig(
+        go=True,
+        heatmap_size=64,
+        sigma=3.0,
+    )
+    train_tfms = btx.data.transforms.make_transforms(
+        cfg, is_train=True, heatmap_tgt_cfg=heatmap_cfg
+    )
+    eval_tfms = btx.data.transforms.make_transforms(
+        cfg, is_train=False, heatmap_tgt_cfg=heatmap_cfg
+    )
+
+    train_names = [t.__class__.__name__ for t in train_tfms]
+    eval_names = [t.__class__.__name__ for t in eval_tfms]
+    assert train_names == [
+        "DecodeRGB",
+        "InitAugState",
+        "RandomResizedCrop",
+        "RandomFlip",
+        "RandomRotation",
+        "ColorJitter",
+        "FinalizeTargets",
+        "GaussianHeatmap",
+        "Normalize",
+    ]
+    assert eval_names == [
+        "DecodeRGB",
+        "InitAugState",
+        "Resize",
+        "FinalizeTargets",
+        "GaussianHeatmap",
+        "Normalize",
+    ]
+    train_heatmap = next(
+        t for t in train_tfms if t.__class__.__name__ == "GaussianHeatmap"
+    )
+    eval_heatmap = next(t for t in eval_tfms if t.__class__.__name__ == "GaussianHeatmap")
+    assert train_heatmap.sigma == 3.0
+    assert train_heatmap.heatmap_size == 64
+    assert eval_heatmap.sigma == 3.0
+    assert eval_heatmap.heatmap_size == 64
+
+
 def test_get_augment_for_dataset_returns_dataset_specific_configs():
     cfg = train.Config(
         aug_hawaii=btx.data.transforms.AugmentConfig(crop_scale_min=0.5),
@@ -276,7 +321,10 @@ def test_loss_and_aux_uses_heatmap_targets_when_model_outputs_heatmaps():
         "oob_points_frac": jnp.array([0.0], dtype=jnp.float32),
     }
 
-    loss, aux = train.loss_and_aux(diff_model, static_model, batch)
+    heatmap_cfg = btx.data.transforms.HeatmapTargetConfig(go=True)
+    loss, aux = train.loss_and_aux(
+        diff_model, static_model, batch, heatmap_tgt_cfg=heatmap_cfg
+    )
 
     np.testing.assert_allclose(np.asarray(loss), np.array(0.0))
     np.testing.assert_allclose(np.asarray(aux.sample_loss), np.array([0.0]))
@@ -308,10 +356,54 @@ def test_loss_and_aux_heatmap_weights_global_loss_by_active_elements():
         "oob_points_frac": jnp.array([0.0, 0.0], dtype=jnp.float32),
     }
 
-    loss, aux = train.loss_and_aux(diff_model, static_model, batch)
+    heatmap_cfg = btx.data.transforms.HeatmapTargetConfig(go=True)
+    loss, aux = train.loss_and_aux(
+        diff_model, static_model, batch, heatmap_tgt_cfg=heatmap_cfg
+    )
 
     np.testing.assert_allclose(np.asarray(aux.sample_loss), np.array([1.0, 4.0]))
     np.testing.assert_allclose(np.asarray(loss), np.array(2.0))
+
+
+def test_loss_and_aux_heatmap_requires_enabled_heatmap_cfg():
+    model = ConstantHeatmapModel(pred_chw=jnp.zeros((4, 64, 64), dtype=jnp.float32))
+    diff_model, static_model = _partition_model(model)
+    batch = {
+        "img": jnp.zeros((1, 256, 256, 3), dtype=jnp.float32),
+        "tgt": jnp.full((1, 2, 2, 2), 999.0, dtype=jnp.float32),
+        "heatmap_tgt": jnp.zeros((1, 4, 64, 64), dtype=jnp.float32),
+        "points_px": jnp.zeros((1, 2, 2, 2), dtype=jnp.float32),
+        "scalebar_px": jnp.array([[[0.0, 0.0], [10.0, 0.0]]], dtype=jnp.float32),
+        "loss_mask": jnp.ones((1, 2), dtype=jnp.float32),
+        "scalebar_valid": jnp.array([False]),
+        "t_orig_from_aug": jnp.eye(3, dtype=jnp.float32)[None, :, :],
+        "oob_points_frac": jnp.array([0.0], dtype=jnp.float32),
+    }
+
+    with np.testing.assert_raises_regex(AssertionError, "heatmap_tgt_cfg.go"):
+        _ = train.loss_and_aux(diff_model, static_model, batch)
+
+
+def test_loss_and_aux_heatmap_checks_cfg_heatmap_size_matches_batch():
+    model = ConstantHeatmapModel(pred_chw=jnp.zeros((4, 64, 64), dtype=jnp.float32))
+    diff_model, static_model = _partition_model(model)
+    batch = {
+        "img": jnp.zeros((1, 256, 256, 3), dtype=jnp.float32),
+        "tgt": jnp.full((1, 2, 2, 2), 999.0, dtype=jnp.float32),
+        "heatmap_tgt": jnp.zeros((1, 4, 64, 64), dtype=jnp.float32),
+        "points_px": jnp.zeros((1, 2, 2, 2), dtype=jnp.float32),
+        "scalebar_px": jnp.array([[[0.0, 0.0], [10.0, 0.0]]], dtype=jnp.float32),
+        "loss_mask": jnp.ones((1, 2), dtype=jnp.float32),
+        "scalebar_valid": jnp.array([False]),
+        "t_orig_from_aug": jnp.eye(3, dtype=jnp.float32)[None, :, :],
+        "oob_points_frac": jnp.array([0.0], dtype=jnp.float32),
+    }
+    heatmap_cfg = btx.data.transforms.HeatmapTargetConfig(go=True, heatmap_size=32)
+
+    with np.testing.assert_raises_regex(AssertionError, "heatmap_size"):
+        _ = train.loss_and_aux(
+            diff_model, static_model, batch, heatmap_tgt_cfg=heatmap_cfg
+        )
 
 
 def test_get_trainable_filter_spec_freezes_vit_for_head_models():
