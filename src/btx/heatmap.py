@@ -1,6 +1,7 @@
 import dataclasses
 
 import beartype
+import jax.nn as jnn
 import jax.numpy as jnp
 from jaxtyping import Array, Float, jaxtyped
 
@@ -47,35 +48,35 @@ class Config:
 
 @jaxtyped(typechecker=beartype.beartype)
 def image_to_heatmap_udp(
-    points_b2: Float[Array, "*batch 2"], *, spec: Config
+    points_b2: Float[Array, "*batch 2"], *, cfg: Config
 ) -> Float[Array, "*batch 2"]:
     """Map image-space coordinates to heatmap-space coordinates using UDP.
 
     Args:
         points_b2: Coordinates in image space with trailing `[..., 2]` order `(x, y)`.
-        spec: Heatmap geometry and numerical configuration.
+        cfg: Heatmap geometry and numerical configuration.
 
     Returns:
         Coordinates in heatmap space with trailing `[..., 2]` order `(hx, hy)`.
     """
-    s = float(spec.downsample)
+    s = float(cfg.downsample)
     return (points_b2 + 0.5) / s - 0.5
 
 
 @jaxtyped(typechecker=beartype.beartype)
 def heatmap_to_image_udp(
-    points_b2: Float[Array, "*batch 2"], *, spec: Config
+    points_b2: Float[Array, "*batch 2"], *, cfg: Config
 ) -> Float[Array, "*batch 2"]:
     """Map heatmap-space coordinates back to image-space coordinates using UDP.
 
     Args:
         points_b2: Coordinates in heatmap space with trailing `[..., 2]` order `(hx, hy)`.
-        spec: Heatmap geometry and numerical configuration.
+        cfg: Heatmap geometry and numerical configuration.
 
     Returns:
         Coordinates in image space with trailing `[..., 2]` order `(x, y)`.
     """
-    s = float(spec.downsample)
+    s = float(cfg.downsample)
     return (points_b2 + 0.5) * s - 0.5
 
 
@@ -90,7 +91,12 @@ def _get_softargmax_axis(*, cfg: Config) -> Float[Array, " heatmap"]:
         Monotonic coordinate axis with `cfg.heatmap_size` entries spanning
         `[-0.5, heatmap_size - 0.5]`.
     """
-    return jnp.arange(cfg.heatmap_size, dtype=jnp.float32) - 0.5
+    return jnp.linspace(
+        -0.5,
+        cfg.heatmap_size - 0.5,
+        cfg.heatmap_size,
+        dtype=jnp.float32,
+    )
 
 
 @jaxtyped(typechecker=beartype.beartype)
@@ -106,9 +112,6 @@ def _softargmax_points(
     Returns:
         Decoded heatmap-space coordinates with shape `[n_keypoints, 2]`.
 
-    Notes:
-        This is intentionally a skeleton implementation and will be fully implemented
-        during the TDD phase.
     """
     msg = (
         "Expected square logits matching heatmap config. "
@@ -116,7 +119,14 @@ def _softargmax_points(
     )
     assert logits_nhw.ndim == 3, msg
     assert logits_nhw.shape[1:] == (cfg.heatmap_size, cfg.heatmap_size), msg
-    raise NotImplementedError("softargmax_points is not implemented yet.")
+    n, h, w = logits_nhw.shape
+    axis_h = _get_softargmax_axis(cfg=cfg)
+    logits_centered_nhw = logits_nhw - jnp.max(logits_nhw, axis=(1, 2), keepdims=True)
+    probs_nhw = jnn.softmax(jnp.reshape(logits_centered_nhw, (n, h * w)), axis=1)
+    probs_nhw = jnp.reshape(probs_nhw, (n, h, w))
+    x_n = jnp.sum(probs_nhw * axis_h[None, None, :], axis=(1, 2))
+    y_n = jnp.sum(probs_nhw * axis_h[None, :, None], axis=(1, 2))
+    return jnp.stack([x_n, y_n], axis=1)
 
 
 @jaxtyped(typechecker=beartype.beartype)
@@ -131,15 +141,18 @@ def _gaussian_targets(
 
     Returns:
         Per-keypoint target heatmaps with shape `[n_keypoints, H, W]`.
-
-    Notes:
-        This is intentionally a skeleton implementation and will be fully implemented
-        during the TDD phase.
     """
     msg = f"Expected keypoint centers with shape [n, 2], got {points_n2.shape}."
     assert points_n2.ndim == 2 and points_n2.shape[1] == 2, msg
-    _ = cfg
-    raise NotImplementedError("gaussian_targets is not implemented yet.")
+    h = cfg.heatmap_size
+    w = cfg.heatmap_size
+    x = jnp.arange(w, dtype=points_n2.dtype)[None, None, :]
+    y = jnp.arange(h, dtype=points_n2.dtype)[None, :, None]
+    hx = points_n2[:, 0][:, None, None]
+    hy = points_n2[:, 1][:, None, None]
+    dist2_nhw = (x - hx) ** 2 + (y - hy) ** 2
+    denom = 2.0 * (cfg.sigma**2)
+    return jnp.exp(-dist2_nhw / denom)
 
 
 @jaxtyped(typechecker=beartype.beartype)
@@ -161,10 +174,6 @@ def _line_loss_permutation_invariant(
 
     Returns:
         Scalar masked MSE value.
-
-    Notes:
-        This is intentionally a skeleton implementation and will be fully implemented
-        during the TDD phase.
     """
     msg = f"Expected pred shape (4, H, W), got {pred_chw.shape}"
     assert pred_chw.ndim == 3 and pred_chw.shape[0] == 4, msg
@@ -172,8 +181,31 @@ def _line_loss_permutation_invariant(
     assert tgt_chw.shape == pred_chw.shape, msg
     msg = f"Expected loss_mask shape (2,), got {loss_mask_l.shape}"
     assert loss_mask_l.shape == (2,), msg
-    _ = cfg
-    raise NotImplementedError("line_loss_permutation_invariant is not implemented yet.")
+    sqerr_chw = (pred_chw - tgt_chw) ** 2
+
+    direct_width = jnp.sum(sqerr_chw[0]) + jnp.sum(sqerr_chw[1])
+    direct_length = jnp.sum(sqerr_chw[2]) + jnp.sum(sqerr_chw[3])
+
+    swapped_width = jnp.sum((pred_chw[0] - tgt_chw[1]) ** 2) + jnp.sum(
+        (pred_chw[1] - tgt_chw[0]) ** 2
+    )
+    swapped_length = jnp.sum((pred_chw[2] - tgt_chw[3]) ** 2) + jnp.sum(
+        (pred_chw[3] - tgt_chw[2]) ** 2
+    )
+
+    line_loss_l = jnp.array(
+        [
+            jnp.minimum(direct_width, swapped_width),
+            jnp.minimum(direct_length, swapped_length),
+        ],
+        dtype=pred_chw.dtype,
+    )
+
+    masked_sum = jnp.sum(line_loss_l * loss_mask_l)
+    _, h, w = pred_chw.shape
+    active = jnp.sum(loss_mask_l) * (2.0 * h * w)
+    denom = jnp.maximum(active, cfg.eps)
+    return masked_sum / denom
 
 
 @jaxtyped(typechecker=beartype.beartype)
@@ -190,15 +222,12 @@ def make_targets(
     Returns:
         Endpoint heatmaps with channel order
         `[width_p0, width_p1, length_p0, length_p1]`.
-
-    Notes:
-        This is intentionally a skeleton implementation and will be fully implemented
-        during the TDD phase.
     """
     msg = f"Expected points shape (2, 2, 2), got {points_l22.shape}"
     assert points_l22.shape == (2, 2, 2), msg
-    _ = cfg
-    raise NotImplementedError("make_targets is not implemented yet.")
+    points_n2 = jnp.reshape(points_l22, (4, 2))
+    points_hm_n2 = image_to_heatmap_udp(points_n2, cfg=cfg)
+    return _gaussian_targets(points_hm_n2, cfg=cfg)
 
 
 @jaxtyped(typechecker=beartype.beartype)
@@ -220,10 +249,6 @@ def heatmap_loss(
 
     Returns:
         Scalar masked MSE value.
-
-    Notes:
-        This is intentionally a skeleton implementation and will be fully implemented
-        during the TDD phase.
     """
     msg = f"Expected pred shape (4, H, W), got {pred_chw.shape}"
     assert pred_chw.ndim == 3 and pred_chw.shape[0] == 4, msg
@@ -231,8 +256,12 @@ def heatmap_loss(
     assert tgt_chw.shape == pred_chw.shape, msg
     msg = f"Expected loss_mask shape (2,), got {loss_mask_l.shape}"
     assert loss_mask_l.shape == (2,), msg
-    _ = cfg
-    raise NotImplementedError("heatmap_loss is not implemented yet.")
+    return _line_loss_permutation_invariant(
+        pred_chw,
+        tgt_chw,
+        loss_mask_l,
+        cfg=cfg,
+    )
 
 
 @jaxtyped(typechecker=beartype.beartype)
@@ -249,10 +278,6 @@ def heatmaps_to_coords(
     Returns:
         Coordinates in image space with shape `[2, 2, 2]` and order
         `[line, endpoint, (x, y)]`.
-
-    Notes:
-        This is intentionally a skeleton implementation and will be fully implemented
-        during the TDD phase.
     """
     msg = f"Expected logits shape (4, H, W), got {logits_chw.shape}"
     assert logits_chw.ndim == 3 and logits_chw.shape[0] == 4, msg
@@ -261,4 +286,6 @@ def heatmaps_to_coords(
         f"{logits_chw.shape[1:]} and {cfg.heatmap_size}."
     )
     assert logits_chw.shape[1:] == (cfg.heatmap_size, cfg.heatmap_size), msg
-    raise NotImplementedError("heatmaps_to_coords is not implemented yet.")
+    points_hm_n2 = _softargmax_points(logits_chw, cfg=cfg)
+    points_img_n2 = heatmap_to_image_udp(points_hm_n2, cfg=cfg)
+    return jnp.reshape(points_img_n2, (2, 2, 2))
