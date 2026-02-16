@@ -470,9 +470,9 @@ def validate(
     seen_metrics = []
     unseen_metrics = []
 
+    diff_model, static_model = eqx.partition(model, filter_spec)
     for i, batch in enumerate(spec.dl):
         batch, metadata = to_device(batch)
-        diff_model, static_model = eqx.partition(model, filter_spec)
         loss, aux = loss_and_aux(diff_model, static_model, batch)
         metrics.append(aux.metrics())
 
