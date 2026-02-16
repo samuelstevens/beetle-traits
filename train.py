@@ -85,6 +85,31 @@ class ValRunSpec:
 
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
+class ObjectiveConfig:
+    """Training objective and target-parameterization settings."""
+
+    kind: tp.Literal["coords", "heatmap"] = "coords"
+    """Objective family: direct coordinate regression or heatmap regression."""
+    heatmap_size: int = 64
+    """Heatmap side length used only when `kind='heatmap'`."""
+    sigma: float = 2.0
+    """Gaussian sigma in heatmap pixels used only when `kind='heatmap'`."""
+    eps: float = 1e-8
+    """Small positive constant for safe normalizations."""
+
+    def __post_init__(self):
+        msg = f"Expected objective kind in {{'coords', 'heatmap'}}, got {self.kind}"
+        assert self.kind in {"coords", "heatmap"}, msg
+        msg = f"Expected positive heatmap_size, got {self.heatmap_size}"
+        assert self.heatmap_size > 0, msg
+        msg = f"Expected positive sigma, got {self.sigma}"
+        assert self.sigma > 0.0, msg
+        msg = f"Expected positive eps, got {self.eps}"
+        assert self.eps > 0.0, msg
+
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
 class Config:
     seed: int = 17
     """Random seed."""
@@ -112,8 +137,8 @@ class Config:
     """Augmentation config for Beetlepalooza data."""
     aug_biorepo: btx.data.AugmentConfig = btx.data.AugmentConfig()
     """Augmentation config for BioRepo data."""
-    heatmap_tgt: btx.data.HeatmapTargetConfig = btx.data.HeatmapTargetConfig()
-    """Optional Gaussian heatmap target configuration."""
+    objective: ObjectiveConfig = ObjectiveConfig()
+    """Training objective configuration."""
     batch_size: int = 256
     """Batch size."""
     n_workers: int = 4
@@ -190,9 +215,7 @@ def make_dataloader(
             mapped_ds = mapped_ds.shuffle()
 
         for i, tfm in enumerate(
-            btx.data.transforms.make_transforms(
-                aug_cfg, is_train=is_train, heatmap_tgt_cfg=cfg.heatmap_tgt
-            )
+            btx.data.transforms.make_transforms(aug_cfg, is_train=is_train)
         ):
             if isinstance(tfm, grain.transforms.RandomMap):
                 mapped_ds = mapped_ds.random_map(tfm, seed=cfg.seed + i)
@@ -289,10 +312,22 @@ def loss_and_aux(
     diff_model: eqx.Module,
     static_model: eqx.Module,
     batch: dict[str, Array],
-    heatmap_tgt_cfg: btx.data.HeatmapTargetConfig | None = None,
+    *,
+    objective_cfg: ObjectiveConfig,
 ) -> tuple[Float[Array, ""], Aux]:
-    if heatmap_tgt_cfg is None:
-        heatmap_tgt_cfg = btx.data.HeatmapTargetConfig()
+    required_keys = [
+        "img",
+        "tgt",
+        "loss_mask",
+        "points_px",
+        "scalebar_px",
+        "scalebar_valid",
+        "t_orig_from_aug",
+        "oob_points_frac",
+    ]
+    missing = tuple(key for key in required_keys if key not in batch)
+    msg = f"Missing required batch keys for loss: {missing}"
+    assert not missing, msg
 
     # 1) Forward pass in augmented-image space.
     model = eqx.combine(diff_model, static_model)
@@ -300,24 +335,21 @@ def loss_and_aux(
     preds_raw = jax.vmap(forward)(batch["img"])
 
     mask_line = batch["loss_mask"]
+    msg = f"Expected loss_mask shape [batch, 2], got {mask_line.shape}"
+    assert mask_line.ndim == 2 and mask_line.shape[1] == 2, msg
     mask_point = mask_line[:, :, None]
+    msg = f"Expected tgt shape [batch, 2, 2, 2], got {batch['tgt'].shape}"
+    assert batch["tgt"].shape[1:] == (2, 2, 2), msg
 
-    # 2) Optimization loss path: coordinate MSE or heatmap MSE depending on model output.
-    heatmap_key = heatmap_tgt_cfg.out_key
-    if heatmap_key in batch:
-        msg = "Expected heatmap_tgt_cfg.go=True when heatmap_tgt is present in batch."
-        assert heatmap_tgt_cfg.go, msg
+    # 2) Optimization loss path: coordinate MSE or heatmap MSE depending on objective config.
+    if objective_cfg.kind == "heatmap":
+        msg = "Expected no precomputed heatmap targets in batch for heatmap objective."
+        assert "heatmap_tgt" not in batch, msg
         msg = (
             "Expected heatmap predictions with shape [batch, 4, H, W], got "
             f"{preds_raw.shape}"
         )
         assert preds_raw.ndim == 4 and preds_raw.shape[1] == 4, msg
-        heatmap_tgt = batch[heatmap_key]
-        msg = (
-            "Expected heatmap_tgt shape to match predictions, got "
-            f"{heatmap_tgt.shape} and {preds_raw.shape}"
-        )
-        assert heatmap_tgt.shape == preds_raw.shape, msg
 
         _, h_img, w_img, _ = batch["img"].shape
         msg = f"Expected square input images, got {batch['img'].shape}"
@@ -328,15 +360,29 @@ def loss_and_aux(
         assert h_hm == w_hm, msg
         msg = (
             "Expected heatmap_size from cfg to match batch heatmaps, got "
-            f"cfg.heatmap_size={heatmap_tgt_cfg.heatmap_size} and batch={h_hm}"
+            f"cfg.heatmap_size={objective_cfg.heatmap_size} and batch={h_hm}"
         )
-        assert h_hm == heatmap_tgt_cfg.heatmap_size, msg
+        assert h_hm == objective_cfg.heatmap_size, msg
+        msg = (
+            "Expected image_size to be divisible by heatmap_size, got "
+            f"image_size={h_img}, heatmap_size={objective_cfg.heatmap_size}"
+        )
+        assert h_img % objective_cfg.heatmap_size == 0, msg
 
         heatmap_cfg = btx.heatmap.Config(
             image_size=h_img,
-            heatmap_size=h_hm,
-            sigma=heatmap_tgt_cfg.sigma,
+            heatmap_size=objective_cfg.heatmap_size,
+            sigma=objective_cfg.sigma,
+            eps=objective_cfg.eps,
         )
+        heatmap_tgt = jax.vmap(
+            lambda points_l22: btx.heatmap.make_targets(points_l22, cfg=heatmap_cfg)
+        )(batch["tgt"])
+        msg = (
+            "Expected generated heatmap targets shape to match predictions, got "
+            f"{heatmap_tgt.shape} and {preds_raw.shape}"
+        )
+        assert heatmap_tgt.shape == preds_raw.shape, msg
         sample_loss_raw = jax.vmap(
             lambda pred_chw, tgt_chw, mask_l: btx.heatmap.heatmap_loss(
                 pred_chw,
@@ -357,11 +403,8 @@ def loss_and_aux(
             lambda pred_chw: btx.heatmap.heatmaps_to_coords(pred_chw, cfg=heatmap_cfg)
         )(preds_raw)
     else:
-        msg = (
-            "Expected no heatmap targets in batch when heatmap_tgt_cfg.go=False, "
-            f"but found key '{heatmap_key}'."
-        )
-        assert not heatmap_tgt_cfg.go, msg
+        msg = f"Expected objective kind 'coords', got {objective_cfg.kind}"
+        assert objective_cfg.kind == "coords", msg
         msg = (
             "Expected coordinate predictions with shape [batch, 2, 2, 2], got "
             f"{preds_raw.shape}"
@@ -442,7 +485,8 @@ def step_model(
     state: tp.Any,
     batch: dict[str, Array],
     filter_spec: PyTree[bool],
-    heatmap_tgt_cfg: btx.data.HeatmapTargetConfig | None = None,
+    *,
+    objective_cfg: ObjectiveConfig,
 ) -> tuple[eqx.Module, tp.Any, Aux]:
     diff_model, static_model = eqx.partition(model, filter_spec)
 
@@ -451,7 +495,7 @@ def step_model(
         diff_model,
         static_model,
         batch,
-        heatmap_tgt_cfg=heatmap_tgt_cfg,
+        objective_cfg=objective_cfg,
     )
 
     updates, new_state = optim.update(grads, state, diff_model)
@@ -582,7 +626,7 @@ def validate(
             diff_model,
             static_model,
             batch,
-            heatmap_tgt_cfg=cfg.heatmap_tgt,
+            objective_cfg=cfg.objective,
         )
         metrics.append(aux.metrics())
 
@@ -889,7 +933,7 @@ def train(cfg: Config):
             state,
             batch,
             filter_spec,
-            heatmap_tgt_cfg=cfg.heatmap_tgt,
+            objective_cfg=cfg.objective,
         )
 
         if step % cfg.save_every == 0:

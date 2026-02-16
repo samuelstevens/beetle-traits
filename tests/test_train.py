@@ -1,6 +1,5 @@
 import importlib.util
 import pathlib
-import typing as tp
 
 import equinox as eqx
 import jax
@@ -9,12 +8,16 @@ import numpy as np
 
 import btx.data
 import btx.data.transforms
+import btx.heatmap
 
 train_fpath = pathlib.Path(__file__).resolve().parents[1] / "train.py"
 spec = importlib.util.spec_from_file_location("train_script", train_fpath)
 assert spec is not None and spec.loader is not None
 train = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(train)
+
+COORD_OBJECTIVE = train.ObjectiveConfig(kind="coords")
+HEATMAP_OBJECTIVE = train.ObjectiveConfig(kind="heatmap", heatmap_size=64, sigma=2.0)
 
 
 class ConstantModel(eqx.Module):
@@ -99,53 +102,15 @@ def test_get_transforms_can_disable_normalization():
     ]
 
 
-def test_get_transforms_includes_gaussian_heatmap_when_enabled():
+def test_get_transforms_never_includes_gaussian_heatmap():
     cfg = btx.data.transforms.AugmentConfig()
-    heatmap_cfg = btx.data.transforms.HeatmapTargetConfig(
-        go=True,
-        heatmap_size=64,
-        sigma=3.0,
-    )
-    train_tfms = btx.data.transforms.make_transforms(
-        cfg, is_train=True, heatmap_tgt_cfg=heatmap_cfg
-    )
-    eval_tfms = btx.data.transforms.make_transforms(
-        cfg, is_train=False, heatmap_tgt_cfg=heatmap_cfg
-    )
+    train_tfms = btx.data.transforms.make_transforms(cfg, is_train=True)
+    eval_tfms = btx.data.transforms.make_transforms(cfg, is_train=False)
 
     train_names = [t.__class__.__name__ for t in train_tfms]
     eval_names = [t.__class__.__name__ for t in eval_tfms]
-    assert train_names == [
-        "DecodeRGB",
-        "InitAugState",
-        "RandomResizedCrop",
-        "RandomFlip",
-        "RandomRotation",
-        "ColorJitter",
-        "FinalizeTargets",
-        "GaussianHeatmap",
-        "Normalize",
-    ]
-    assert eval_names == [
-        "DecodeRGB",
-        "InitAugState",
-        "Resize",
-        "FinalizeTargets",
-        "GaussianHeatmap",
-        "Normalize",
-    ]
-    train_heatmap = tp.cast(
-        btx.data.transforms.GaussianHeatmap,
-        next(t for t in train_tfms if t.__class__.__name__ == "GaussianHeatmap"),
-    )
-    eval_heatmap = tp.cast(
-        btx.data.transforms.GaussianHeatmap,
-        next(t for t in eval_tfms if t.__class__.__name__ == "GaussianHeatmap"),
-    )
-    assert train_heatmap.sigma == 3.0
-    assert train_heatmap.heatmap_size == 64
-    assert eval_heatmap.sigma == 3.0
-    assert eval_heatmap.heatmap_size == 64
+    assert "GaussianHeatmap" not in train_names
+    assert "GaussianHeatmap" not in eval_names
 
 
 def test_get_augment_for_dataset_returns_dataset_specific_configs():
@@ -164,6 +129,34 @@ def test_get_augment_for_dataset_returns_dataset_specific_configs():
     assert got_biorepo.crop_scale_min == 0.9
 
 
+def test_objective_config_asserts_on_invalid_fields():
+    with np.testing.assert_raises(Exception):
+        _ = train.ObjectiveConfig(kind="bad")
+    with np.testing.assert_raises_regex(AssertionError, "positive heatmap_size"):
+        _ = train.ObjectiveConfig(kind="heatmap", heatmap_size=0)
+    with np.testing.assert_raises_regex(AssertionError, "positive sigma"):
+        _ = train.ObjectiveConfig(kind="heatmap", sigma=0.0)
+
+
+def test_loss_and_aux_asserts_on_missing_required_batch_key():
+    model = ConstantModel(pred_l22=jnp.zeros((2, 2, 2), dtype=jnp.float32))
+    diff_model, static_model = _partition_model(model)
+    batch = {
+        "img": jnp.zeros((1, 256, 256, 3), dtype=jnp.float32),
+        "tgt": jnp.zeros((1, 2, 2, 2), dtype=jnp.float32),
+        "scalebar_px": jnp.array([[[0.0, 0.0], [10.0, 0.0]]], dtype=jnp.float32),
+        "loss_mask": jnp.ones((1, 2), dtype=jnp.float32),
+        "scalebar_valid": jnp.array([False]),
+        "t_orig_from_aug": jnp.eye(3, dtype=jnp.float32)[None, :, :],
+        "oob_points_frac": jnp.array([0.25], dtype=jnp.float32),
+    }
+
+    with np.testing.assert_raises_regex(AssertionError, "points_px"):
+        _ = train.loss_and_aux(
+            diff_model, static_model, batch, objective_cfg=COORD_OBJECTIVE
+        )
+
+
 def test_loss_and_aux_masks_cm_metrics_and_reports_oob_points_frac():
     model = ConstantModel(pred_l22=jnp.zeros((2, 2, 2), dtype=jnp.float32))
     diff_model, static_model = _partition_model(model)
@@ -178,7 +171,9 @@ def test_loss_and_aux_masks_cm_metrics_and_reports_oob_points_frac():
         "oob_points_frac": jnp.array([0.25], dtype=jnp.float32),
     }
 
-    loss, aux = train.loss_and_aux(diff_model, static_model, batch)
+    loss, aux = train.loss_and_aux(
+        diff_model, static_model, batch, objective_cfg=COORD_OBJECTIVE
+    )
 
     assert float(loss) == 0.0
     assert np.isnan(np.asarray(aux.point_err_cm)).all()
@@ -210,7 +205,9 @@ def test_loss_and_aux_uses_order_invariant_endpoint_matching():
         "oob_points_frac": jnp.array([0.0], dtype=jnp.float32),
     }
 
-    _, aux = train.loss_and_aux(diff_model, static_model, batch)
+    _, aux = train.loss_and_aux(
+        diff_model, static_model, batch, objective_cfg=COORD_OBJECTIVE
+    )
     np.testing.assert_allclose(np.asarray(aux.point_err_cm), 0.0, atol=1e-7)
     np.testing.assert_allclose(np.asarray(aux.line_err_cm), 0.0, atol=1e-7)
 
@@ -238,7 +235,9 @@ def test_loss_and_aux_weights_global_loss_by_active_targets():
         "oob_points_frac": jnp.array([0.0, 0.0], dtype=jnp.float32),
     }
 
-    loss, aux = train.loss_and_aux(diff_model, static_model, batch)
+    loss, aux = train.loss_and_aux(
+        diff_model, static_model, batch, objective_cfg=COORD_OBJECTIVE
+    )
 
     np.testing.assert_allclose(np.asarray(aux.sample_loss), np.array([1.0, 4.0]))
     np.testing.assert_allclose(np.asarray(loss), np.array(2.0))
@@ -267,7 +266,9 @@ def test_loss_and_aux_marks_sample_loss_nan_when_sample_is_fully_masked():
         "oob_points_frac": jnp.array([0.0, 0.0], dtype=jnp.float32),
     }
 
-    loss, aux = train.loss_and_aux(diff_model, static_model, batch)
+    loss, aux = train.loss_and_aux(
+        diff_model, static_model, batch, objective_cfg=COORD_OBJECTIVE
+    )
 
     sample_loss = np.asarray(aux.sample_loss)
     np.testing.assert_allclose(sample_loss[0], np.array(1.0))
@@ -296,12 +297,16 @@ def test_loss_and_aux_returns_zero_loss_and_zero_grads_when_all_targets_masked()
     }
 
     def loss_only(diff_model, static_model):
-        loss, _ = train.loss_and_aux(diff_model, static_model, batch)
+        loss, _ = train.loss_and_aux(
+            diff_model, static_model, batch, objective_cfg=COORD_OBJECTIVE
+        )
         return loss
 
     loss_grad_fn = eqx.filter_value_and_grad(loss_only)
     loss, grads = loss_grad_fn(diff_model, static_model)
-    _, aux = train.loss_and_aux(diff_model, static_model, batch)
+    _, aux = train.loss_and_aux(
+        diff_model, static_model, batch, objective_cfg=COORD_OBJECTIVE
+    )
 
     np.testing.assert_allclose(np.asarray(loss), np.array(0.0))
     grad = np.asarray(grads.pred_l22)
@@ -310,14 +315,13 @@ def test_loss_and_aux_returns_zero_loss_and_zero_grads_when_all_targets_masked()
     assert np.isnan(np.asarray(aux.sample_loss)).all()
 
 
-def test_loss_and_aux_uses_heatmap_targets_when_model_outputs_heatmaps():
+def test_loss_and_aux_uses_generated_heatmap_targets_from_tgt():
     model = ConstantHeatmapModel(pred_chw=jnp.zeros((4, 64, 64), dtype=jnp.float32))
     diff_model, static_model = _partition_model(model)
 
     batch = {
         "img": jnp.zeros((1, 256, 256, 3), dtype=jnp.float32),
         "tgt": jnp.full((1, 2, 2, 2), 999.0, dtype=jnp.float32),
-        "heatmap_tgt": jnp.zeros((1, 4, 64, 64), dtype=jnp.float32),
         "points_px": jnp.zeros((1, 2, 2, 2), dtype=jnp.float32),
         "scalebar_px": jnp.array([[[0.0, 0.0], [10.0, 0.0]]], dtype=jnp.float32),
         "loss_mask": jnp.ones((1, 2), dtype=jnp.float32),
@@ -326,9 +330,8 @@ def test_loss_and_aux_uses_heatmap_targets_when_model_outputs_heatmaps():
         "oob_points_frac": jnp.array([0.0], dtype=jnp.float32),
     }
 
-    heatmap_cfg = btx.data.transforms.HeatmapTargetConfig(go=True)
     loss, aux = train.loss_and_aux(
-        diff_model, static_model, batch, heatmap_tgt_cfg=heatmap_cfg
+        diff_model, static_model, batch, objective_cfg=HEATMAP_OBJECTIVE
     )
 
     np.testing.assert_allclose(np.asarray(loss), np.array(0.0))
@@ -340,14 +343,15 @@ def test_loss_and_aux_uses_heatmap_targets_when_model_outputs_heatmaps():
 def test_loss_and_aux_heatmap_weights_global_loss_by_active_elements():
     model = ConstantHeatmapModel(pred_chw=jnp.zeros((4, 64, 64), dtype=jnp.float32))
     diff_model, static_model = _partition_model(model)
-
-    heatmap_tgt = jnp.zeros((2, 4, 64, 64), dtype=jnp.float32)
-    heatmap_tgt = heatmap_tgt.at[0].set(1.0)
-    heatmap_tgt = heatmap_tgt.at[1].set(2.0)
     batch = {
         "img": jnp.zeros((2, 256, 256, 3), dtype=jnp.float32),
-        "tgt": jnp.full((2, 2, 2, 2), 999.0, dtype=jnp.float32),
-        "heatmap_tgt": heatmap_tgt,
+        "tgt": jnp.array(
+            [
+                [[[128.0, 128.0], [128.0, 128.0]], [[128.0, 128.0], [128.0, 128.0]]],
+                [[[999.0, 999.0], [999.0, 999.0]], [[999.0, 999.0], [999.0, 999.0]]],
+            ],
+            dtype=jnp.float32,
+        ),
         "points_px": jnp.zeros((2, 2, 2, 2), dtype=jnp.float32),
         "scalebar_px": jnp.array(
             [[[0.0, 0.0], [10.0, 0.0]], [[0.0, 0.0], [10.0, 0.0]]],
@@ -360,43 +364,29 @@ def test_loss_and_aux_heatmap_weights_global_loss_by_active_elements():
         ),
         "oob_points_frac": jnp.array([0.0, 0.0], dtype=jnp.float32),
     }
-
-    heatmap_cfg = btx.data.transforms.HeatmapTargetConfig(go=True)
     loss, aux = train.loss_and_aux(
-        diff_model, static_model, batch, heatmap_tgt_cfg=heatmap_cfg
+        diff_model, static_model, batch, objective_cfg=HEATMAP_OBJECTIVE
+    )
+    heatmap_cfg = btx.heatmap.Config(image_size=256, heatmap_size=64, sigma=2.0)
+    pred0 = jnp.zeros((4, 64, 64), dtype=jnp.float32)
+    tgt0 = btx.heatmap.make_targets(batch["tgt"][0], cfg=heatmap_cfg)
+    tgt1 = btx.heatmap.make_targets(batch["tgt"][1], cfg=heatmap_cfg)
+    loss0 = btx.heatmap.heatmap_loss(
+        pred0, tgt0, batch["loss_mask"][0], cfg=heatmap_cfg
+    )
+    loss1 = btx.heatmap.heatmap_loss(
+        pred0, tgt1, batch["loss_mask"][1], cfg=heatmap_cfg
+    )
+    active = np.array([2.0 * 64 * 64, 1.0 * 64 * 64], dtype=np.float32)
+    expected_loss = (float(loss0) * active[0] + float(loss1) * active[1]) / float(
+        active.sum()
     )
 
-    np.testing.assert_allclose(np.asarray(aux.sample_loss), np.array([1.0, 4.0]))
-    np.testing.assert_allclose(np.asarray(loss), np.array(2.0))
+    np.testing.assert_allclose(np.asarray(aux.sample_loss), np.array([loss0, loss1]))
+    np.testing.assert_allclose(np.asarray(loss), np.array(expected_loss), rtol=1e-5)
 
 
-def test_loss_and_aux_heatmap_uses_configured_out_key():
-    model = ConstantHeatmapModel(pred_chw=jnp.zeros((4, 64, 64), dtype=jnp.float32))
-    diff_model, static_model = _partition_model(model)
-    batch = {
-        "img": jnp.zeros((1, 256, 256, 3), dtype=jnp.float32),
-        "tgt": jnp.full((1, 2, 2, 2), 999.0, dtype=jnp.float32),
-        "custom_heatmap_tgt": jnp.zeros((1, 4, 64, 64), dtype=jnp.float32),
-        "points_px": jnp.zeros((1, 2, 2, 2), dtype=jnp.float32),
-        "scalebar_px": jnp.array([[[0.0, 0.0], [10.0, 0.0]]], dtype=jnp.float32),
-        "loss_mask": jnp.ones((1, 2), dtype=jnp.float32),
-        "scalebar_valid": jnp.array([False]),
-        "t_orig_from_aug": jnp.eye(3, dtype=jnp.float32)[None, :, :],
-        "oob_points_frac": jnp.array([0.0], dtype=jnp.float32),
-    }
-    heatmap_cfg = btx.data.transforms.HeatmapTargetConfig(
-        go=True, out_key="custom_heatmap_tgt"
-    )
-
-    loss, aux = train.loss_and_aux(
-        diff_model, static_model, batch, heatmap_tgt_cfg=heatmap_cfg
-    )
-
-    np.testing.assert_allclose(np.asarray(loss), np.array(0.0))
-    np.testing.assert_allclose(np.asarray(aux.sample_loss), np.array([0.0]))
-
-
-def test_loss_and_aux_heatmap_requires_enabled_heatmap_cfg():
+def test_loss_and_aux_heatmap_rejects_precomputed_heatmap_targets_in_batch():
     model = ConstantHeatmapModel(pred_chw=jnp.zeros((4, 64, 64), dtype=jnp.float32))
     diff_model, static_model = _partition_model(model)
     batch = {
@@ -411,8 +401,12 @@ def test_loss_and_aux_heatmap_requires_enabled_heatmap_cfg():
         "oob_points_frac": jnp.array([0.0], dtype=jnp.float32),
     }
 
-    with np.testing.assert_raises_regex(AssertionError, "heatmap_tgt_cfg.go"):
-        _ = train.loss_and_aux(diff_model, static_model, batch)
+    with np.testing.assert_raises_regex(
+        AssertionError, "no precomputed heatmap targets"
+    ):
+        _ = train.loss_and_aux(
+            diff_model, static_model, batch, objective_cfg=HEATMAP_OBJECTIVE
+        )
 
 
 def test_loss_and_aux_heatmap_checks_cfg_heatmap_size_matches_batch():
@@ -421,7 +415,6 @@ def test_loss_and_aux_heatmap_checks_cfg_heatmap_size_matches_batch():
     batch = {
         "img": jnp.zeros((1, 256, 256, 3), dtype=jnp.float32),
         "tgt": jnp.full((1, 2, 2, 2), 999.0, dtype=jnp.float32),
-        "heatmap_tgt": jnp.zeros((1, 4, 64, 64), dtype=jnp.float32),
         "points_px": jnp.zeros((1, 2, 2, 2), dtype=jnp.float32),
         "scalebar_px": jnp.array([[[0.0, 0.0], [10.0, 0.0]]], dtype=jnp.float32),
         "loss_mask": jnp.ones((1, 2), dtype=jnp.float32),
@@ -429,11 +422,11 @@ def test_loss_and_aux_heatmap_checks_cfg_heatmap_size_matches_batch():
         "t_orig_from_aug": jnp.eye(3, dtype=jnp.float32)[None, :, :],
         "oob_points_frac": jnp.array([0.0], dtype=jnp.float32),
     }
-    heatmap_cfg = btx.data.transforms.HeatmapTargetConfig(go=True, heatmap_size=32)
+    heatmap_cfg = train.ObjectiveConfig(kind="heatmap", heatmap_size=32, sigma=2.0)
 
     with np.testing.assert_raises_regex(AssertionError, "heatmap_size"):
         _ = train.loss_and_aux(
-            diff_model, static_model, batch, heatmap_tgt_cfg=heatmap_cfg
+            diff_model, static_model, batch, objective_cfg=heatmap_cfg
         )
 
 
