@@ -7,6 +7,8 @@ import torch
 
 from btx.modeling import dinov3
 
+pytestmark = pytest.mark.slow
+
 
 @pytest.fixture(scope="session")
 def pt_ckpt_dir(pytestconfig):
