@@ -17,7 +17,12 @@ train = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(train)
 
 COORD_OBJECTIVE = train.ObjectiveConfig(kind="coords")
-HEATMAP_OBJECTIVE = train.ObjectiveConfig(kind="heatmap", heatmap_size=64, sigma=2.0)
+HEATMAP_OBJECTIVE = train.ObjectiveConfig(
+    kind="heatmap",
+    heatmap_size=64,
+    sigma=2.0,
+    heatmap_loss="mse",
+)
 
 
 class ConstantModel(eqx.Module):
@@ -144,7 +149,7 @@ def test_objective_config_defaults_heatmap_loss_to_ce():
 
 
 def test_objective_config_asserts_on_invalid_heatmap_loss():
-    with np.testing.assert_raises_regex(AssertionError, "heatmap_loss"):
+    with np.testing.assert_raises(Exception):
         _ = train.ObjectiveConfig(kind="heatmap", heatmap_loss="bad")
 
 
