@@ -284,9 +284,15 @@ class Aux(eqx.Module):
     # Batch-level data quality.
     oob_points_frac: Float[Array, ""]
     """Batch-mean fraction of out-of-bounds target points after augmentation."""
+    heatmap_max_logit: Float[Array, " batch channels"]
+    """Per-sample per-channel max heatmap logit. NaN for coordinate objective."""
+    heatmap_entropy: Float[Array, " batch channels"]
+    """Per-sample per-channel spatial softmax entropy. NaN for coordinate objective."""
+    heatmap_near_uniform: Float[Array, " batch channels"]
+    """Per-sample per-channel near-uniform indicator in [0, 1]. NaN for coordinate objective."""
 
     def metrics(self) -> dict:
-        return {
+        metrics = {
             "loss": self.loss,
             "point_err_cm": self.point_err_cm,
             "line_err_cm": self.line_err_cm,
@@ -296,6 +302,13 @@ class Aux(eqx.Module):
             "length_line_err_cm": self.length_line_err_cm,
             "oob_points_frac": self.oob_points_frac,
         }
+        for i, channel_name in enumerate(btx.heatmap.CHANNEL_NAMES):
+            metrics[f"heatmap_max_logit_{channel_name}"] = self.heatmap_max_logit[:, i]
+            metrics[f"heatmap_entropy_{channel_name}"] = self.heatmap_entropy[:, i]
+            metrics[f"heatmap_near_uniform_frac_{channel_name}"] = (
+                self.heatmap_near_uniform[:, i]
+            )
+        return metrics
 
 
 @eqx.filter_jit()
@@ -335,13 +348,14 @@ def loss_and_aux(
 
     # 2) Optimization loss path: coordinate MSE or heatmap MSE depending on objective config.
     if objective_cfg.kind == "heatmap":
+        n_channels = len(btx.heatmap.CHANNEL_NAMES)
         msg = "Expected no precomputed heatmap targets in batch for heatmap objective."
         assert "heatmap_tgt" not in batch, msg
         msg = (
-            "Expected heatmap predictions with shape [batch, 4, H, W], got "
+            f"Expected heatmap predictions with shape [batch, {n_channels}, H, W], got "
             f"{preds_raw.shape}"
         )
-        assert preds_raw.ndim == 4 and preds_raw.shape[1] == 4, msg
+        assert preds_raw.ndim == 4 and preds_raw.shape[1] == n_channels, msg
 
         _, h_img, w_img, _ = batch["img"].shape
         msg = f"Expected square input images, got {batch['img'].shape}"
@@ -394,6 +408,9 @@ def loss_and_aux(
         preds = jax.vmap(
             lambda pred_chw: btx.heatmap.heatmaps_to_coords(pred_chw, cfg=heatmap_cfg)
         )(preds_raw)
+        heatmap_max_logit, heatmap_entropy, heatmap_near_uniform = (
+            btx.heatmap.get_diagnostics(preds_raw, cfg=heatmap_cfg)
+        )
     else:
         msg = f"Expected objective kind 'coords', got {objective_cfg.kind}"
         assert objective_cfg.kind == "coords", msg
@@ -419,6 +436,12 @@ def loss_and_aux(
             jnp.sum(masked_error, axis=(1, 2, 3)) / sample_active_values,
             jnp.nan,
         )
+        n_batch = mask_line.shape[0]
+        n_channels = len(btx.heatmap.CHANNEL_NAMES)
+        nan_diag = jnp.full((n_batch, n_channels), jnp.nan, dtype=preds_raw.dtype)
+        heatmap_max_logit = nan_diag
+        heatmap_entropy = nan_diag
+        heatmap_near_uniform = nan_diag
 
     # 3) Move predictions back to original-image coordinates and resolve endpoint ordering.
     preds_orig = btx.metrics.apply_affine(batch["t_orig_from_aug"], preds)
@@ -465,6 +488,9 @@ def loss_and_aux(
         width_line_err_cm,
         length_line_err_cm,
         oob_points_frac,
+        heatmap_max_logit,
+        heatmap_entropy,
+        heatmap_near_uniform,
     )
     return mse, aux
 

@@ -146,3 +146,42 @@ def test_heatmap_loss_is_permutation_invariant_per_line():
 
     loss = btx.heatmap.heatmap_loss(pred_chw, tgt_chw, loss_mask_l, cfg=cfg)
     np.testing.assert_allclose(loss, 0.0, atol=1e-8)
+
+
+def test_channel_names_match_expected_endpoint_order():
+    assert btx.heatmap.CHANNEL_NAMES == (
+        "width_p0",
+        "width_p1",
+        "length_p0",
+        "length_p1",
+    )
+
+
+def test_get_diagnostics_flags_uniform_maps():
+    cfg = btx.heatmap.Config(image_size=256, heatmap_size=64, sigma=2.0)
+    logits_bchw = jnp.zeros((2, 4, 64, 64), dtype=jnp.float32)
+
+    max_logit_bc, entropy_bc, near_uniform_bc = btx.heatmap.get_diagnostics(
+        logits_bchw, cfg=cfg
+    )
+
+    np.testing.assert_allclose(max_logit_bc, 0.0, atol=1e-7)
+    np.testing.assert_allclose(entropy_bc, np.log(np.array(64 * 64)), atol=1e-3)
+    np.testing.assert_allclose(near_uniform_bc, 1.0, atol=1e-7)
+
+
+def test_get_diagnostics_flags_peaked_maps_as_not_uniform():
+    cfg = btx.heatmap.Config(image_size=256, heatmap_size=64, sigma=2.0)
+    logits_bchw = -10.0 * jnp.ones((1, 4, 64, 64), dtype=jnp.float32)
+    logits_bchw = logits_bchw.at[0, 0, 10, 20].set(10.0)
+    logits_bchw = logits_bchw.at[0, 1, 11, 21].set(10.0)
+    logits_bchw = logits_bchw.at[0, 2, 12, 22].set(10.0)
+    logits_bchw = logits_bchw.at[0, 3, 13, 23].set(10.0)
+
+    max_logit_bc, entropy_bc, near_uniform_bc = btx.heatmap.get_diagnostics(
+        logits_bchw, cfg=cfg
+    )
+
+    np.testing.assert_allclose(max_logit_bc, 10.0, atol=1e-7)
+    assert np.all(np.asarray(entropy_bc) < 1.0)
+    np.testing.assert_allclose(near_uniform_bc, 0.0, atol=1e-7)

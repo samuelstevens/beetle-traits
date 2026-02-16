@@ -1,9 +1,21 @@
+"""Heatmap target/loss/decoding utilities for the current line-endpoint task.
+
+Channel contract is intentionally fixed to four endpoint channels:
+`[width_p0, width_p1, length_p0, length_p1]`.
+If we later switch to a different annotation shape (for example, polylines with
+more than two endpoints), update `CHANNEL_NAMES` and the reshape assumptions in
+`make_targets`/`heatmaps_to_coords`, plus their tests.
+"""
+
 import dataclasses
 
 import beartype
 import jax.nn as jnn
 import jax.numpy as jnp
 from jaxtyping import Array, Float, jaxtyped
+
+CHANNEL_NAMES = ("width_p0", "width_p1", "length_p0", "length_p1")
+NEAR_UNIFORM_ENTROPY_FRAC = 0.98
 
 
 @beartype.beartype
@@ -175,8 +187,9 @@ def _line_loss_permutation_invariant(
     Returns:
         Scalar masked MSE value.
     """
-    msg = f"Expected pred shape (4, H, W), got {pred_chw.shape}"
-    assert pred_chw.ndim == 3 and pred_chw.shape[0] == 4, msg
+    n_channels = len(CHANNEL_NAMES)
+    msg = f"Expected pred shape ({n_channels}, H, W), got {pred_chw.shape}"
+    assert pred_chw.ndim == 3 and pred_chw.shape[0] == n_channels, msg
     msg = f"Expected tgt shape matching pred, got {tgt_chw.shape} vs {pred_chw.shape}"
     assert tgt_chw.shape == pred_chw.shape, msg
     msg = f"Expected loss_mask shape (2,), got {loss_mask_l.shape}"
@@ -250,8 +263,9 @@ def heatmap_loss(
     Returns:
         Scalar masked MSE value.
     """
-    msg = f"Expected pred shape (4, H, W), got {pred_chw.shape}"
-    assert pred_chw.ndim == 3 and pred_chw.shape[0] == 4, msg
+    n_channels = len(CHANNEL_NAMES)
+    msg = f"Expected pred shape ({n_channels}, H, W), got {pred_chw.shape}"
+    assert pred_chw.ndim == 3 and pred_chw.shape[0] == n_channels, msg
     msg = f"Expected tgt shape matching pred, got {tgt_chw.shape} vs {pred_chw.shape}"
     assert tgt_chw.shape == pred_chw.shape, msg
     msg = f"Expected loss_mask shape (2,), got {loss_mask_l.shape}"
@@ -279,8 +293,9 @@ def heatmaps_to_coords(
         Coordinates in image space with shape `[2, 2, 2]` and order
         `[line, endpoint, (x, y)]`.
     """
-    msg = f"Expected logits shape (4, H, W), got {logits_chw.shape}"
-    assert logits_chw.ndim == 3 and logits_chw.shape[0] == 4, msg
+    n_channels = len(CHANNEL_NAMES)
+    msg = f"Expected logits shape ({n_channels}, H, W), got {logits_chw.shape}"
+    assert logits_chw.ndim == 3 and logits_chw.shape[0] == n_channels, msg
     msg = (
         "Expected logits to match heatmap config size, got "
         f"{logits_chw.shape[1:]} and {cfg.heatmap_size}."
@@ -289,3 +304,51 @@ def heatmaps_to_coords(
     points_hm_n2 = _softargmax_points(logits_chw, cfg=cfg)
     points_img_n2 = heatmap_to_image_udp(points_hm_n2, cfg=cfg)
     return jnp.reshape(points_img_n2, (2, 2, 2))
+
+
+@jaxtyped(typechecker=beartype.beartype)
+def get_diagnostics(
+    logits_bchw: Float[Array, "batch channels height width"], *, cfg: Config
+) -> tuple[
+    Float[Array, "batch channels"],
+    Float[Array, "batch channels"],
+    Float[Array, "batch channels"],
+]:
+    """Compute collapse diagnostics from predicted heatmap logits.
+
+    Args:
+        logits_bchw: Predicted heatmap logits with shape `[batch, channels, H, W]`.
+        cfg: Heatmap geometry and numerical configuration.
+
+    Returns:
+        Tuple `(max_logit_bc, entropy_bc, near_uniform_bc)` where:
+        - `max_logit_bc` is max logit per sample/channel.
+        - `entropy_bc` is spatial softmax entropy per sample/channel.
+        - `near_uniform_bc` is 1.0 when normalized entropy exceeds threshold, else 0.0.
+    """
+    n_channels = len(CHANNEL_NAMES)
+    msg = f"Expected logits shape [batch, {n_channels}, H, W], got {logits_bchw.shape}"
+    assert logits_bchw.ndim == 4 and logits_bchw.shape[1] == n_channels, msg
+    _, _, h_hm, w_hm = logits_bchw.shape
+    msg = f"Expected square heatmaps, got {logits_bchw.shape}"
+    assert h_hm == w_hm, msg
+    msg = (
+        "Expected logits spatial size to match cfg.heatmap_size, got "
+        f"{(h_hm, w_hm)} and cfg.heatmap_size={cfg.heatmap_size}"
+    )
+    assert (h_hm, w_hm) == (cfg.heatmap_size, cfg.heatmap_size), msg
+
+    max_logit_bc = jnp.max(logits_bchw, axis=(2, 3))
+    logits_centered = logits_bchw - jnp.max(logits_bchw, axis=(2, 3), keepdims=True)
+    probs_bc_hw = jnn.softmax(
+        jnp.reshape(logits_centered, (-1, n_channels, h_hm * w_hm)), axis=2
+    )
+    entropy_bc = -jnp.sum(
+        probs_bc_hw * jnp.log(jnp.maximum(probs_bc_hw, cfg.eps)), axis=-1
+    )
+    max_entropy = jnp.log(jnp.array(h_hm * w_hm, dtype=entropy_bc.dtype))
+    entropy_frac_bc = entropy_bc / jnp.maximum(max_entropy, cfg.eps)
+    near_uniform_bc = (entropy_frac_bc >= NEAR_UNIFORM_ENTROPY_FRAC).astype(
+        entropy_bc.dtype
+    )
+    return max_logit_bc, entropy_bc, near_uniform_bc
