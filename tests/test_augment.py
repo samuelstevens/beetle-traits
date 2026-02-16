@@ -308,6 +308,16 @@ def test_gaussian_heatmap_generates_endpoint_targets_with_expected_peaks():
     ]
 
 
+def test_gaussian_heatmap_init_asserts_on_nondivisible_size_ratio():
+    with pytest.raises(AssertionError):
+        _ = btx.data.transforms.GaussianHeatmap(image_size=255, heatmap_size=64)
+
+
+def test_gaussian_heatmap_init_asserts_on_nonpositive_sigma():
+    with pytest.raises(AssertionError):
+        _ = btx.data.transforms.GaussianHeatmap(sigma=0.0)
+
+
 def test_affine_composition_order_is_not_commutative():
     points = np.array(
         [
