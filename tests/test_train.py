@@ -23,6 +23,23 @@ class ConstantModel(eqx.Module):
         return self.pred_l22
 
 
+class ConstantHeatmapModel(eqx.Module):
+    pred_chw: jax.Array
+
+    def __call__(self, _img_hwc):
+        return self.pred_chw
+
+
+class FrozenBackboneWithHead(eqx.Module):
+    vit: eqx.nn.Linear
+    head: eqx.nn.Linear
+
+
+class FrozenBackboneWithDecoder(eqx.Module):
+    vit: eqx.nn.Linear
+    decoder: eqx.nn.Linear
+
+
 def _partition_model(model: eqx.Module):
     spec = jax.tree_util.tree_map(eqx.is_array, model)
     return eqx.partition(model, spec)
@@ -241,3 +258,57 @@ def test_loss_and_aux_returns_zero_loss_and_zero_grads_when_all_targets_masked()
     assert np.isfinite(grad).all()
     np.testing.assert_allclose(grad, 0.0)
     assert np.isnan(np.asarray(aux.sample_loss)).all()
+
+
+def test_loss_and_aux_uses_heatmap_targets_when_model_outputs_heatmaps():
+    model = ConstantHeatmapModel(pred_chw=jnp.zeros((4, 64, 64), dtype=jnp.float32))
+    diff_model, static_model = _partition_model(model)
+
+    batch = {
+        "img": jnp.zeros((1, 256, 256, 3), dtype=jnp.float32),
+        "tgt": jnp.full((1, 2, 2, 2), 999.0, dtype=jnp.float32),
+        "heatmap_tgt": jnp.zeros((1, 4, 64, 64), dtype=jnp.float32),
+        "points_px": jnp.zeros((1, 2, 2, 2), dtype=jnp.float32),
+        "scalebar_px": jnp.array([[[0.0, 0.0], [10.0, 0.0]]], dtype=jnp.float32),
+        "loss_mask": jnp.ones((1, 2), dtype=jnp.float32),
+        "scalebar_valid": jnp.array([False]),
+        "t_orig_from_aug": jnp.eye(3, dtype=jnp.float32)[None, :, :],
+        "oob_points_frac": jnp.array([0.0], dtype=jnp.float32),
+    }
+
+    loss, aux = train.loss_and_aux(diff_model, static_model, batch)
+
+    np.testing.assert_allclose(np.asarray(loss), np.array(0.0))
+    np.testing.assert_allclose(np.asarray(aux.sample_loss), np.array([0.0]))
+    assert aux.preds.shape == (1, 2, 2, 2)
+    assert np.isfinite(np.asarray(aux.preds)).all()
+
+
+def test_get_trainable_filter_spec_freezes_vit_for_head_models():
+    k1, k2 = jax.random.split(jax.random.key(seed=0))
+    model = FrozenBackboneWithHead(
+        vit=eqx.nn.Linear(4, 4, key=k1),
+        head=eqx.nn.Linear(4, 2, key=k2),
+    )
+
+    spec = train.get_trainable_filter_spec(model)
+
+    assert spec.vit.weight is False
+    assert spec.vit.bias is False
+    assert spec.head.weight is True
+    assert spec.head.bias is True
+
+
+def test_get_trainable_filter_spec_does_not_require_head_attribute():
+    k1, k2 = jax.random.split(jax.random.key(seed=1))
+    model = FrozenBackboneWithDecoder(
+        vit=eqx.nn.Linear(4, 4, key=k1),
+        decoder=eqx.nn.Linear(4, 2, key=k2),
+    )
+
+    spec = train.get_trainable_filter_spec(model)
+
+    assert spec.vit.weight is False
+    assert spec.vit.bias is False
+    assert spec.decoder.weight is True
+    assert spec.decoder.bias is True
