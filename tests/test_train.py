@@ -340,6 +340,102 @@ def test_loss_and_aux_uses_generated_heatmap_targets_from_tgt():
     assert np.isfinite(np.asarray(aux.preds)).all()
 
 
+def test_loss_and_aux_heatmap_reports_uniform_map_diagnostics():
+    model = ConstantHeatmapModel(pred_chw=jnp.zeros((4, 64, 64), dtype=jnp.float32))
+    diff_model, static_model = _partition_model(model)
+    batch = {
+        "img": jnp.zeros((1, 256, 256, 3), dtype=jnp.float32),
+        "tgt": jnp.full((1, 2, 2, 2), 128.0, dtype=jnp.float32),
+        "points_px": jnp.zeros((1, 2, 2, 2), dtype=jnp.float32),
+        "scalebar_px": jnp.array([[[0.0, 0.0], [10.0, 0.0]]], dtype=jnp.float32),
+        "loss_mask": jnp.ones((1, 2), dtype=jnp.float32),
+        "scalebar_valid": jnp.array([False]),
+        "t_orig_from_aug": jnp.eye(3, dtype=jnp.float32)[None, :, :],
+        "oob_points_frac": jnp.array([0.0], dtype=jnp.float32),
+    }
+    _, aux = train.loss_and_aux(
+        diff_model, static_model, batch, objective_cfg=HEATMAP_OBJECTIVE
+    )
+
+    assert aux.heatmap_max_logit.shape == (1, 4)
+    assert aux.heatmap_entropy.shape == (1, 4)
+    assert aux.heatmap_near_uniform.shape == (1, 4)
+    np.testing.assert_allclose(np.asarray(aux.heatmap_max_logit), 0.0, atol=1e-7)
+    np.testing.assert_allclose(
+        np.asarray(aux.heatmap_entropy),
+        np.log(np.array(64 * 64, dtype=np.float32)),
+        atol=1e-3,
+    )
+    np.testing.assert_allclose(np.asarray(aux.heatmap_near_uniform), 1.0, atol=1e-7)
+
+    metrics = aux.metrics()
+    for channel_name in btx.heatmap.CHANNEL_NAMES:
+        key = f"heatmap_near_uniform_frac_{channel_name}"
+        assert key in metrics
+        np.testing.assert_allclose(np.asarray(metrics[key]), 1.0, atol=1e-7)
+
+
+def test_loss_and_aux_heatmap_reports_spiky_map_diagnostics():
+    pred_chw = -10.0 * jnp.ones((4, 64, 64), dtype=jnp.float32)
+    pred_chw = pred_chw.at[0, 10, 20].set(10.0)
+    pred_chw = pred_chw.at[1, 11, 21].set(10.0)
+    pred_chw = pred_chw.at[2, 12, 22].set(10.0)
+    pred_chw = pred_chw.at[3, 13, 23].set(10.0)
+    model = ConstantHeatmapModel(pred_chw=pred_chw)
+    diff_model, static_model = _partition_model(model)
+    batch = {
+        "img": jnp.zeros((1, 256, 256, 3), dtype=jnp.float32),
+        "tgt": jnp.full((1, 2, 2, 2), 128.0, dtype=jnp.float32),
+        "points_px": jnp.zeros((1, 2, 2, 2), dtype=jnp.float32),
+        "scalebar_px": jnp.array([[[0.0, 0.0], [10.0, 0.0]]], dtype=jnp.float32),
+        "loss_mask": jnp.ones((1, 2), dtype=jnp.float32),
+        "scalebar_valid": jnp.array([False]),
+        "t_orig_from_aug": jnp.eye(3, dtype=jnp.float32)[None, :, :],
+        "oob_points_frac": jnp.array([0.0], dtype=jnp.float32),
+    }
+    _, aux = train.loss_and_aux(
+        diff_model, static_model, batch, objective_cfg=HEATMAP_OBJECTIVE
+    )
+
+    np.testing.assert_allclose(np.asarray(aux.heatmap_max_logit), 10.0, atol=1e-7)
+    np.testing.assert_allclose(np.asarray(aux.heatmap_near_uniform), 0.0, atol=1e-7)
+    assert np.all(np.asarray(aux.heatmap_entropy) < 1.0)
+
+    metrics = aux.metrics()
+    for channel_name in btx.heatmap.CHANNEL_NAMES:
+        max_key = f"heatmap_max_logit_{channel_name}"
+        ent_key = f"heatmap_entropy_{channel_name}"
+        uni_key = f"heatmap_near_uniform_frac_{channel_name}"
+        assert max_key in metrics
+        assert ent_key in metrics
+        assert uni_key in metrics
+        np.testing.assert_allclose(np.asarray(metrics[max_key]), 10.0, atol=1e-7)
+        np.testing.assert_allclose(np.asarray(metrics[uni_key]), 0.0, atol=1e-7)
+        assert np.all(np.asarray(metrics[ent_key]) < 1.0)
+
+
+def test_loss_and_aux_coords_sets_heatmap_diagnostics_to_nan():
+    model = ConstantModel(pred_l22=jnp.zeros((2, 2, 2), dtype=jnp.float32))
+    diff_model, static_model = _partition_model(model)
+    batch = {
+        "img": jnp.zeros((1, 256, 256, 3), dtype=jnp.float32),
+        "tgt": jnp.zeros((1, 2, 2, 2), dtype=jnp.float32),
+        "points_px": jnp.zeros((1, 2, 2, 2), dtype=jnp.float32),
+        "scalebar_px": jnp.array([[[0.0, 0.0], [10.0, 0.0]]], dtype=jnp.float32),
+        "loss_mask": jnp.ones((1, 2), dtype=jnp.float32),
+        "scalebar_valid": jnp.array([False]),
+        "t_orig_from_aug": jnp.eye(3, dtype=jnp.float32)[None, :, :],
+        "oob_points_frac": jnp.array([0.0], dtype=jnp.float32),
+    }
+    _, aux = train.loss_and_aux(
+        diff_model, static_model, batch, objective_cfg=COORD_OBJECTIVE
+    )
+
+    assert np.isnan(np.asarray(aux.heatmap_max_logit)).all()
+    assert np.isnan(np.asarray(aux.heatmap_entropy)).all()
+    assert np.isnan(np.asarray(aux.heatmap_near_uniform)).all()
+
+
 def test_loss_and_aux_heatmap_weights_global_loss_by_active_elements():
     model = ConstantHeatmapModel(pred_chw=jnp.zeros((4, 64, 64), dtype=jnp.float32))
     diff_model, static_model = _partition_model(model)
