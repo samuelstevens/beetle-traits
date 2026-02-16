@@ -80,17 +80,47 @@ class DecodeRGB(grain.transforms.Map):
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
 class GaussianHeatmap(grain.transforms.Map):
-    size: int = 256
-    """Image size in pixels."""
-    sigma: float = 3.0
-    """Standard deviation in pixels."""
+    image_size: int = 256
+    """Square input image size in pixels."""
+    heatmap_size: int = 64
+    """Square target heatmap size in pixels."""
+    sigma: float = 2.0
+    """Gaussian standard deviation in heatmap pixels."""
+    in_key: str = "tgt"
+    """Sample key containing endpoint coordinates with shape `(2, 2, 2)`."""
+    out_key: str = "heatmap_tgt"
+    """Sample key where generated heatmaps with shape `(4, H, W)` are stored."""
 
     def map(self, element: object) -> object:
-        """Reads the 'tgt' key and adds a 'heatmap': Float[np.ndarray, "height width"] key-value pair to the sample dict.
+        """Attach endpoint heatmap targets to a sample.
 
-        The heatmap should be a Gaussian/normal distribution centered on the tgt keypoint, with a peak of 1.0 and a std dev of self.sigma.
+        Args:
+            element: Dataset sample dictionary containing transformed endpoint coordinates.
+
+        Returns:
+            The same sample dictionary with an additional `out_key` entry containing
+            endpoint heatmaps.
+
+        Notes:
+            This method is a skeleton and currently writes placeholder zero heatmaps.
+            TDD will replace this with UDP Gaussian targets.
         """
         sample = _sample_dct(element)
+        msg = f"Missing required coordinate key '{self.in_key}'"
+        assert self.in_key in sample, msg
+        points_l22 = np.asarray(sample[self.in_key], dtype=np.float32)
+        msg = f"Expected {self.in_key} shape (2, 2, 2), got {points_l22.shape}"
+        assert points_l22.shape == (2, 2, 2), msg
+        msg = (
+            "Expected integer downsample ratio between image and heatmap sizes, got "
+            f"image_size={self.image_size}, heatmap_size={self.heatmap_size}"
+        )
+        assert self.image_size % self.heatmap_size == 0, msg
+        msg = f"Expected positive sigma, got {self.sigma}"
+        assert self.sigma > 0.0, msg
+        sample[self.out_key] = np.zeros(
+            (4, self.heatmap_size, self.heatmap_size), dtype=np.float32
+        )
         return sample
 
 
@@ -520,7 +550,9 @@ class FinalizeTargets(grain.transforms.Map):
 
 @beartype.beartype
 def make_transforms(
-    cfg: AugmentConfig, *, is_train: bool
+    cfg: AugmentConfig,
+    *,
+    is_train: bool,
 ) -> list[grain.transforms.Map | grain.transforms.RandomMap]:
     """Build the Grain transform list for train or eval.
 
@@ -531,7 +563,7 @@ def make_transforms(
     Returns:
         Ordered `grain.transforms.Map`/`RandomMap` transforms to apply to each sample.
 
-    The pipeline always starts with `DecodeRGB` and `InitAugState` and always applies `FinalizeTargets` before optional `Normalize`. If `is_train` and `cfg.go` are both true, the pipeline includes stochastic spatial/color augmentation (`RandomResizedCrop`, `RandomFlip`, `RandomRotation`, `ColorJitter`). Otherwise it uses deterministic `Resize`.
+    The pipeline always starts with `DecodeRGB` and `InitAugState` and always applies `FinalizeTargets` before optional normalization. If `is_train` and `cfg.go` are both true, the pipeline includes stochastic spatial/color augmentation (`RandomResizedCrop`, `RandomFlip`, `RandomRotation`, `ColorJitter`). Otherwise it uses deterministic `Resize`.
     """
 
     tfms: list[grain.transforms.Map | grain.transforms.RandomMap] = [
