@@ -43,8 +43,8 @@ def _make_run(*, sigma: float, lr: float, run_i: int) -> dict:
             f"sigma-{sigma:g}",
             f"lr-{lr:g}",
         ],
-        "heatmap_tgt": {
-            "go": True,
+        "objective": {
+            "kind": "heatmap",
             "heatmap_size": 64,
             "sigma": sigma,
         },
