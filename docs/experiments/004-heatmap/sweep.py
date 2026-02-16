@@ -47,6 +47,7 @@ def _make_run(*, sigma: float, lr: float, run_i: int) -> dict:
             "kind": "heatmap",
             "heatmap_size": 64,
             "sigma": sigma,
+            "heatmap_loss": "ce",
         },
         "model": {
             "dinov3_ckpt": DINO_CKPT_FPATH,

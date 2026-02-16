@@ -222,6 +222,69 @@ def _line_loss_permutation_invariant(
 
 
 @jaxtyped(typechecker=beartype.beartype)
+def _channel_ce_loss(
+    pred_hw: Float[Array, "height width"],
+    tgt_hw: Float[Array, "height width"],
+    *,
+    cfg: Config,
+) -> Float[Array, ""]:
+    """Cross-entropy from target heatmap values to predicted heatmap logits."""
+    msg = (
+        f"Expected pred and tgt to match shape, got {pred_hw.shape} and {tgt_hw.shape}"
+    )
+    assert pred_hw.shape == tgt_hw.shape, msg
+    tgt_sum = jnp.sum(tgt_hw)
+    tgt_prob_hw = tgt_hw / jnp.maximum(tgt_sum, cfg.eps)
+    pred_flat = jnp.reshape(pred_hw, (-1,))
+    tgt_prob_flat = jnp.reshape(tgt_prob_hw, (-1,))
+    return -jnp.sum(tgt_prob_flat * jnn.log_softmax(pred_flat, axis=0))
+
+
+@jaxtyped(typechecker=beartype.beartype)
+def _line_ce_loss_permutation_invariant(
+    pred_chw: Float[Array, "channels height width"],
+    tgt_chw: Float[Array, "channels height width"],
+    loss_mask_l: Float[Array, "2"],
+    *,
+    cfg: Config,
+) -> Float[Array, ""]:
+    """Compute permutation-invariant masked CE over width and length endpoint pairs."""
+    n_channels = len(CHANNEL_NAMES)
+    msg = f"Expected pred shape ({n_channels}, H, W), got {pred_chw.shape}"
+    assert pred_chw.ndim == 3 and pred_chw.shape[0] == n_channels, msg
+    msg = f"Expected tgt shape matching pred, got {tgt_chw.shape} vs {pred_chw.shape}"
+    assert tgt_chw.shape == pred_chw.shape, msg
+    msg = f"Expected loss_mask shape (2,), got {loss_mask_l.shape}"
+    assert loss_mask_l.shape == (2,), msg
+
+    direct_width = _channel_ce_loss(
+        pred_chw[0], tgt_chw[0], cfg=cfg
+    ) + _channel_ce_loss(pred_chw[1], tgt_chw[1], cfg=cfg)
+    direct_length = _channel_ce_loss(
+        pred_chw[2], tgt_chw[2], cfg=cfg
+    ) + _channel_ce_loss(pred_chw[3], tgt_chw[3], cfg=cfg)
+
+    swapped_width = _channel_ce_loss(
+        pred_chw[0], tgt_chw[1], cfg=cfg
+    ) + _channel_ce_loss(pred_chw[1], tgt_chw[0], cfg=cfg)
+    swapped_length = _channel_ce_loss(
+        pred_chw[2], tgt_chw[3], cfg=cfg
+    ) + _channel_ce_loss(pred_chw[3], tgt_chw[2], cfg=cfg)
+
+    line_loss_l = jnp.array(
+        [
+            jnp.minimum(direct_width, swapped_width),
+            jnp.minimum(direct_length, swapped_length),
+        ],
+        dtype=pred_chw.dtype,
+    )
+    masked_sum = jnp.sum(line_loss_l * loss_mask_l)
+    active = jnp.sum(loss_mask_l)
+    denom = jnp.maximum(active, cfg.eps)
+    return masked_sum / denom
+
+
+@jaxtyped(typechecker=beartype.beartype)
 def make_targets(
     points_l22: Float[Array, "2 2 2"], *, cfg: Config
 ) -> Float[Array, "4 height width"]:
@@ -271,6 +334,30 @@ def heatmap_loss(
     msg = f"Expected loss_mask shape (2,), got {loss_mask_l.shape}"
     assert loss_mask_l.shape == (2,), msg
     return _line_loss_permutation_invariant(
+        pred_chw,
+        tgt_chw,
+        loss_mask_l,
+        cfg=cfg,
+    )
+
+
+@jaxtyped(typechecker=beartype.beartype)
+def heatmap_ce_loss(
+    pred_chw: Float[Array, "channels height width"],
+    tgt_chw: Float[Array, "channels height width"],
+    loss_mask_l: Float[Array, "2"],
+    *,
+    cfg: Config,
+) -> Float[Array, ""]:
+    """Compute permutation-invariant masked CE for endpoint heatmaps."""
+    n_channels = len(CHANNEL_NAMES)
+    msg = f"Expected pred shape ({n_channels}, H, W), got {pred_chw.shape}"
+    assert pred_chw.ndim == 3 and pred_chw.shape[0] == n_channels, msg
+    msg = f"Expected tgt shape matching pred, got {tgt_chw.shape} vs {pred_chw.shape}"
+    assert tgt_chw.shape == pred_chw.shape, msg
+    msg = f"Expected loss_mask shape (2,), got {loss_mask_l.shape}"
+    assert loss_mask_l.shape == (2,), msg
+    return _line_ce_loss_permutation_invariant(
         pred_chw,
         tgt_chw,
         loss_mask_l,
