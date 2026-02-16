@@ -12,13 +12,13 @@ def pytest_addoption(parser):
     parser.addoption(
         "--dinov3-pt-ckpts",
         action="store",
-        default=None,
+        default=os.getenv("DINOV3_PT_CKPTS"),
         help="Path to DINOv3 PyTorch checkpoint directory.",
     )
     parser.addoption(
         "--dinov3-jax-ckpts",
         action="store",
-        default=None,
+        default=os.getenv("DINOV3_JAX_CKPTS"),
         help="Path to DINOv3 Jax checkpoint directory.",
     )
 

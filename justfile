@@ -1,3 +1,5 @@
+set dotenv-load := true
+
 docs: fmt
     rm -rf docs/api
     mkdir -p docs/api
@@ -14,4 +16,7 @@ clean:
     rm -rf .ruff_cache/
 
 test:
+    uv run pytest -m "not slow" --cov . tests/
+
+test-all:
     uv run pytest --cov . tests/

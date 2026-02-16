@@ -67,6 +67,7 @@ def test_heatmap_model_forward_asserts_on_input_size_mismatch(
         _ = model(img_hwc)
 
 
+@pytest.mark.slow
 def test_heatmap_model_forward_with_real_vits_checkpoint(jax_path: str):
     if not jax_path.endswith("dinov3_vits16.eqx"):
         return
