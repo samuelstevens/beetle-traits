@@ -1,4 +1,5 @@
 import jax
+import jax.nn as jnn
 import jax.numpy as jnp
 import numpy as np
 from hypothesis import given, settings
@@ -15,6 +16,19 @@ def _normalize_channels(
 ) -> jax.Array:
     denom_ch11 = jnp.sum(tgt_chw, axis=(1, 2), keepdims=True)
     return tgt_chw / jnp.maximum(denom_ch11, cfg.eps)
+
+
+def _channel_ce_manual(
+    pred_hw: jax.Array,
+    tgt_hw: jax.Array,
+    *,
+    cfg: btx.heatmap.Config,
+) -> jax.Array:
+    tgt_prob_hw = tgt_hw / jnp.maximum(jnp.sum(tgt_hw), cfg.eps)
+    return -jnp.sum(
+        jnp.reshape(tgt_prob_hw, (-1,))
+        * jnn.log_softmax(jnp.reshape(pred_hw, (-1,)), axis=0)
+    )
 
 
 @given(
@@ -115,6 +129,22 @@ def test_heatmaps_to_coords_returns_line_endpoint_coordinates():
     coords_l22 = btx.heatmap.heatmaps_to_coords(logits_chw, cfg=cfg)
     assert coords_l22.shape == (2, 2, 2)
     np.testing.assert_allclose(coords_l22, 127.5, atol=1e-4)
+
+
+def test_heatmaps_to_coords_decodes_perfect_gaussian_logit_without_bias():
+    cfg = btx.heatmap.Config(image_size=256, heatmap_size=64, sigma=2.0)
+    points_l22 = jnp.array(
+        [
+            [[10.0, 20.0], [30.0, 40.0]],
+            [[90.0, 100.0], [120.0, 140.0]],
+        ],
+        dtype=jnp.float32,
+    )
+    tgt_chw = btx.heatmap.make_targets(points_l22, cfg=cfg)
+    logits_chw = jnp.log(jnp.maximum(tgt_chw, cfg.eps))
+    decoded_l22 = btx.heatmap.heatmaps_to_coords(logits_chw, cfg=cfg)
+
+    np.testing.assert_allclose(decoded_l22[0, 0], points_l22[0, 0], atol=1e-2)
 
 
 def test_heatmap_loss_zero_when_predictions_match_targets():
@@ -245,6 +275,170 @@ def test_heatmap_ce_loss_has_nonzero_gradients():
         return btx.heatmap.heatmap_ce_loss(pred, tgt_chw, loss_mask_l, cfg=cfg)
 
     grad_chw = jax.grad(loss_fn)(pred_chw)
+    assert np.isfinite(np.asarray(grad_chw)).all()
+    assert float(jnp.sum(jnp.abs(grad_chw))) > 0.0
+
+
+def test_heatmap_ce_loss_all_masked_returns_zero_and_zero_grad():
+    cfg = btx.heatmap.Config(image_size=32, heatmap_size=8, sigma=1.5)
+    points_l22 = jnp.array(
+        [
+            [[6.0, 6.0], [10.0, 10.0]],
+            [[16.0, 18.0], [24.0, 22.0]],
+        ],
+        dtype=jnp.float32,
+    )
+    pred_chw = jnp.arange(4 * 8 * 8, dtype=jnp.float32).reshape(4, 8, 8)
+    tgt_chw = btx.heatmap.make_targets(points_l22, cfg=cfg)
+    loss_mask_l = jnp.array([0.0, 0.0], dtype=jnp.float32)
+
+    def loss_fn(pred: jax.Array) -> jax.Array:
+        return btx.heatmap.heatmap_ce_loss(pred, tgt_chw, loss_mask_l, cfg=cfg)
+
+    loss = loss_fn(pred_chw)
+    grad_chw = jax.grad(loss_fn)(pred_chw)
+    np.testing.assert_allclose(loss, 0.0, atol=1e-8)
+    assert np.isfinite(np.asarray(grad_chw)).all()
+    np.testing.assert_allclose(np.asarray(grad_chw), 0.0, atol=1e-8)
+
+
+def test_heatmap_ce_loss_far_oob_target_has_zero_loss_and_zero_grad():
+    cfg = btx.heatmap.Config(image_size=256, heatmap_size=64, sigma=2.0)
+    points_l22 = jnp.full((2, 2, 2), -1_000.0, dtype=jnp.float32)
+    pred_chw = jnp.zeros((4, 64, 64), dtype=jnp.float32)
+    tgt_chw = btx.heatmap.make_targets(points_l22, cfg=cfg)
+    loss_mask_l = jnp.array([1.0, 1.0], dtype=jnp.float32)
+    np.testing.assert_allclose(
+        np.asarray(jnp.sum(tgt_chw, axis=(1, 2))),
+        np.zeros(4, dtype=np.float32),
+        atol=0.0,
+    )
+
+    def loss_fn(pred: jax.Array) -> jax.Array:
+        return btx.heatmap.heatmap_ce_loss(pred, tgt_chw, loss_mask_l, cfg=cfg)
+
+    loss = loss_fn(pred_chw)
+    grad_chw = jax.grad(loss_fn)(pred_chw)
+    np.testing.assert_allclose(loss, 0.0, atol=1e-8)
+    np.testing.assert_allclose(np.asarray(grad_chw), 0.0, atol=1e-8)
+
+
+@given(
+    pred_chw=hnp.arrays(
+        dtype=np.float32,
+        shape=(4, 8, 8),
+        elements=st.floats(
+            min_value=-10.0,
+            max_value=10.0,
+            allow_nan=False,
+            allow_infinity=False,
+        ),
+    ),
+    points_l22=hnp.arrays(
+        dtype=np.float32,
+        shape=(2, 2, 2),
+        elements=st.floats(
+            min_value=-32.0,
+            max_value=64.0,
+            allow_nan=False,
+            allow_infinity=False,
+        ),
+    ),
+    loss_mask_l=hnp.arrays(dtype=np.int32, shape=(2,), elements=st.integers(0, 1)),
+)
+@settings(deadline=None, max_examples=25)
+def test_heatmap_ce_loss_permutation_invariant_randomized(
+    pred_chw: np.ndarray,
+    points_l22: np.ndarray,
+    loss_mask_l: np.ndarray,
+):
+    cfg = btx.heatmap.Config(image_size=32, heatmap_size=8, sigma=1.5)
+    pred = jnp.asarray(pred_chw, dtype=jnp.float32)
+    tgt = btx.heatmap.make_targets(jnp.asarray(points_l22, dtype=jnp.float32), cfg=cfg)
+    mask = jnp.asarray(loss_mask_l, dtype=jnp.float32)
+    swapped = jnp.stack([pred[1], pred[0], pred[3], pred[2]], axis=0)
+    loss_direct = btx.heatmap.heatmap_ce_loss(pred, tgt, mask, cfg=cfg)
+    loss_swapped = btx.heatmap.heatmap_ce_loss(swapped, tgt, mask, cfg=cfg)
+    np.testing.assert_allclose(loss_swapped, loss_direct, atol=1e-6, rtol=1e-5)
+
+
+@given(
+    pred_chw=hnp.arrays(
+        dtype=np.float32,
+        shape=(4, 8, 8),
+        elements=st.floats(
+            min_value=-10.0,
+            max_value=10.0,
+            allow_nan=False,
+            allow_infinity=False,
+        ),
+    ),
+    points_l22=hnp.arrays(
+        dtype=np.float32,
+        shape=(2, 2, 2),
+        elements=st.floats(
+            min_value=-32.0,
+            max_value=64.0,
+            allow_nan=False,
+            allow_infinity=False,
+        ),
+    ),
+    loss_mask_l=hnp.arrays(dtype=np.int32, shape=(2,), elements=st.integers(0, 1)),
+)
+@settings(deadline=None, max_examples=25)
+def test_heatmap_ce_loss_matches_manual_line_formula(
+    pred_chw: np.ndarray,
+    points_l22: np.ndarray,
+    loss_mask_l: np.ndarray,
+):
+    cfg = btx.heatmap.Config(image_size=32, heatmap_size=8, sigma=1.5)
+    pred = jnp.asarray(pred_chw, dtype=jnp.float32)
+    tgt = btx.heatmap.make_targets(jnp.asarray(points_l22, dtype=jnp.float32), cfg=cfg)
+    mask = jnp.asarray(loss_mask_l, dtype=jnp.float32)
+    loss = btx.heatmap.heatmap_ce_loss(pred, tgt, mask, cfg=cfg)
+    direct_width = _channel_ce_manual(pred[0], tgt[0], cfg=cfg) + _channel_ce_manual(
+        pred[1], tgt[1], cfg=cfg
+    )
+    direct_length = _channel_ce_manual(pred[2], tgt[2], cfg=cfg) + _channel_ce_manual(
+        pred[3], tgt[3], cfg=cfg
+    )
+    swapped_width = _channel_ce_manual(pred[0], tgt[1], cfg=cfg) + _channel_ce_manual(
+        pred[1], tgt[0], cfg=cfg
+    )
+    swapped_length = _channel_ce_manual(pred[2], tgt[3], cfg=cfg) + _channel_ce_manual(
+        pred[3], tgt[2], cfg=cfg
+    )
+    line_loss_l = jnp.array(
+        [
+            jnp.minimum(direct_width, swapped_width),
+            jnp.minimum(direct_length, swapped_length),
+        ],
+        dtype=pred.dtype,
+    )
+    manual = jnp.sum(line_loss_l * mask) / jnp.maximum(jnp.sum(mask), cfg.eps)
+    np.testing.assert_allclose(loss, manual, atol=1e-6, rtol=1e-5)
+
+
+def test_heatmap_ce_loss_and_grad_finite_for_extreme_logits():
+    cfg = btx.heatmap.Config(image_size=32, heatmap_size=8, sigma=1.5)
+    points_l22 = jnp.array(
+        [
+            [[6.0, 6.0], [10.0, 10.0]],
+            [[16.0, 18.0], [24.0, 22.0]],
+        ],
+        dtype=jnp.float32,
+    )
+    pred_chw = -10_000.0 * jnp.ones((4, 8, 8), dtype=jnp.float32)
+    pred_chw = pred_chw.at[:, 2, 3].set(10_000.0)
+    tgt_chw = btx.heatmap.make_targets(points_l22, cfg=cfg)
+    loss_mask_l = jnp.array([1.0, 1.0], dtype=jnp.float32)
+
+    def loss_fn(pred: jax.Array) -> jax.Array:
+        return btx.heatmap.heatmap_ce_loss(pred, tgt_chw, loss_mask_l, cfg=cfg)
+
+    loss = loss_fn(pred_chw)
+    grad_chw = jax.grad(loss_fn)(pred_chw)
+    assert np.isfinite(np.asarray(loss))
     assert np.isfinite(np.asarray(grad_chw)).all()
     assert float(jnp.sum(jnp.abs(grad_chw))) > 0.0
 
