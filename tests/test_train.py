@@ -284,6 +284,36 @@ def test_loss_and_aux_uses_heatmap_targets_when_model_outputs_heatmaps():
     assert np.isfinite(np.asarray(aux.preds)).all()
 
 
+def test_loss_and_aux_heatmap_weights_global_loss_by_active_elements():
+    model = ConstantHeatmapModel(pred_chw=jnp.zeros((4, 64, 64), dtype=jnp.float32))
+    diff_model, static_model = _partition_model(model)
+
+    heatmap_tgt = jnp.zeros((2, 4, 64, 64), dtype=jnp.float32)
+    heatmap_tgt = heatmap_tgt.at[0].set(1.0)
+    heatmap_tgt = heatmap_tgt.at[1].set(2.0)
+    batch = {
+        "img": jnp.zeros((2, 256, 256, 3), dtype=jnp.float32),
+        "tgt": jnp.full((2, 2, 2, 2), 999.0, dtype=jnp.float32),
+        "heatmap_tgt": heatmap_tgt,
+        "points_px": jnp.zeros((2, 2, 2, 2), dtype=jnp.float32),
+        "scalebar_px": jnp.array(
+            [[[0.0, 0.0], [10.0, 0.0]], [[0.0, 0.0], [10.0, 0.0]]],
+            dtype=jnp.float32,
+        ),
+        "loss_mask": jnp.array([[1.0, 1.0], [1.0, 0.0]], dtype=jnp.float32),
+        "scalebar_valid": jnp.array([False, False]),
+        "t_orig_from_aug": jnp.tile(
+            jnp.eye(3, dtype=jnp.float32)[None, :, :], (2, 1, 1)
+        ),
+        "oob_points_frac": jnp.array([0.0, 0.0], dtype=jnp.float32),
+    }
+
+    loss, aux = train.loss_and_aux(diff_model, static_model, batch)
+
+    np.testing.assert_allclose(np.asarray(aux.sample_loss), np.array([1.0, 4.0]))
+    np.testing.assert_allclose(np.asarray(loss), np.array(2.0))
+
+
 def test_get_trainable_filter_spec_freezes_vit_for_head_models():
     k1, k2 = jax.random.split(jax.random.key(seed=0))
     model = FrozenBackboneWithHead(
