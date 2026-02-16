@@ -1,5 +1,6 @@
 import importlib.util
 import pathlib
+import typing as tp
 
 import equinox as eqx
 import jax
@@ -133,10 +134,14 @@ def test_get_transforms_includes_gaussian_heatmap_when_enabled():
         "GaussianHeatmap",
         "Normalize",
     ]
-    train_heatmap = next(
-        t for t in train_tfms if t.__class__.__name__ == "GaussianHeatmap"
+    train_heatmap = tp.cast(
+        btx.data.transforms.GaussianHeatmap,
+        next(t for t in train_tfms if t.__class__.__name__ == "GaussianHeatmap"),
     )
-    eval_heatmap = next(t for t in eval_tfms if t.__class__.__name__ == "GaussianHeatmap")
+    eval_heatmap = tp.cast(
+        btx.data.transforms.GaussianHeatmap,
+        next(t for t in eval_tfms if t.__class__.__name__ == "GaussianHeatmap"),
+    )
     assert train_heatmap.sigma == 3.0
     assert train_heatmap.heatmap_size == 64
     assert eval_heatmap.sigma == 3.0
@@ -363,6 +368,32 @@ def test_loss_and_aux_heatmap_weights_global_loss_by_active_elements():
 
     np.testing.assert_allclose(np.asarray(aux.sample_loss), np.array([1.0, 4.0]))
     np.testing.assert_allclose(np.asarray(loss), np.array(2.0))
+
+
+def test_loss_and_aux_heatmap_uses_configured_out_key():
+    model = ConstantHeatmapModel(pred_chw=jnp.zeros((4, 64, 64), dtype=jnp.float32))
+    diff_model, static_model = _partition_model(model)
+    batch = {
+        "img": jnp.zeros((1, 256, 256, 3), dtype=jnp.float32),
+        "tgt": jnp.full((1, 2, 2, 2), 999.0, dtype=jnp.float32),
+        "custom_heatmap_tgt": jnp.zeros((1, 4, 64, 64), dtype=jnp.float32),
+        "points_px": jnp.zeros((1, 2, 2, 2), dtype=jnp.float32),
+        "scalebar_px": jnp.array([[[0.0, 0.0], [10.0, 0.0]]], dtype=jnp.float32),
+        "loss_mask": jnp.ones((1, 2), dtype=jnp.float32),
+        "scalebar_valid": jnp.array([False]),
+        "t_orig_from_aug": jnp.eye(3, dtype=jnp.float32)[None, :, :],
+        "oob_points_frac": jnp.array([0.0], dtype=jnp.float32),
+    }
+    heatmap_cfg = btx.data.transforms.HeatmapTargetConfig(
+        go=True, out_key="custom_heatmap_tgt"
+    )
+
+    loss, aux = train.loss_and_aux(
+        diff_model, static_model, batch, heatmap_tgt_cfg=heatmap_cfg
+    )
+
+    np.testing.assert_allclose(np.asarray(loss), np.array(0.0))
+    np.testing.assert_allclose(np.asarray(aux.sample_loss), np.array([0.0]))
 
 
 def test_loss_and_aux_heatmap_requires_enabled_heatmap_cfg():
