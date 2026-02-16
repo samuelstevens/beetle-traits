@@ -41,6 +41,11 @@ exclude = ["tests/sweeps/invalid_syntax.py"]
 [tool.uv]
 package = true
 
+[tool.pytest.ini_options]
+markers = [
+    "slow: integration-heavy tests that are skipped by default in just test",
+]
+
 [tool.marimo.runtime]
 watcher_on_save = "autorun"
 
