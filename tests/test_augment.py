@@ -280,6 +280,34 @@ def test_finalize_targets_seed2_regression_does_not_fail_inverse_invariant():
     assert np.all(np.isfinite(out["t_orig_from_aug"]))
 
 
+def test_gaussian_heatmap_generates_endpoint_targets_with_expected_peaks():
+    sample = _spatial_sample()
+    sample["tgt"] = np.array(
+        [
+            [[1.5, 1.5], [5.5, 9.5]],
+            [[13.5, 17.5], [21.5, 25.5]],
+        ],
+        dtype=np.float32,
+    )
+    out = btx.data.transforms.GaussianHeatmap(
+        image_size=256, heatmap_size=64, sigma=0.5
+    ).map(sample)
+    heatmap = out["heatmap_tgt"]
+
+    assert isinstance(heatmap, np.ndarray)
+    assert heatmap.shape == (4, 64, 64)
+    np.testing.assert_allclose(np.max(heatmap, axis=(1, 2)), 1.0, atol=1e-6)
+    peak_hw = [
+        np.unravel_index(int(np.argmax(heatmap[c])), heatmap[c].shape) for c in range(4)
+    ]
+    assert peak_hw == [
+        (0, 0),  # width p0
+        (2, 1),  # width p1
+        (4, 3),  # length p0
+        (6, 5),  # length p1
+    ]
+
+
 def test_affine_composition_order_is_not_commutative():
     points = np.array(
         [
