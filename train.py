@@ -94,6 +94,8 @@ class ObjectiveConfig:
     """Heatmap side length used only when `kind='heatmap'`."""
     sigma: float = 2.0
     """Gaussian sigma in heatmap pixels used only when `kind='heatmap'`."""
+    heatmap_loss: tp.Literal["mse", "ce"] = "ce"
+    """Heatmap loss when `kind='heatmap'`: `mse` for pixel regression, `ce` for distribution matching."""
     eps: float = 1e-8
     """Small positive constant for safe normalizations."""
 
@@ -104,6 +106,8 @@ class ObjectiveConfig:
         assert self.heatmap_size > 0, msg
         msg = f"Expected positive sigma, got {self.sigma}"
         assert self.sigma > 0.0, msg
+        msg = f"Expected heatmap_loss in {{'mse', 'ce'}}, got {self.heatmap_loss}"
+        assert self.heatmap_loss in {"mse", "ce"}, msg
         msg = f"Expected positive eps, got {self.eps}"
         assert self.eps > 0.0, msg
 
@@ -250,20 +254,20 @@ class Aux(eqx.Module):
 
     Groups:
     1) `preds` and `loss` for optimization and visualization.
-    2) `sample_loss` is per-sample masked MSE in augmented-image space.
+    2) `sample_loss` is per-sample masked objective loss in augmented-image space.
     3) Error tensors split by geometry: `point_*` are endpoint distances, `line_*` are absolute line-length errors (both in centimeters).
     4) Optional per-trait summaries (`width_*`, `length_*`) and batch-level data-quality metric (`oob_points_frac`).
     """
 
     # Core optimization/prediction outputs.
     loss: Float[Array, ""]
-    """Scalar training loss (masked MSE in augmented-image space)."""
+    """Scalar training loss in augmented-image space."""
     preds: Float[Array, "batch 2 2 2"]
     """Predicted endpoints in augmented-image coordinates, shape [batch, lines, points, xy]."""
 
     # Per-sample augmented-space loss proxy and cm geometric errors.
     sample_loss: Float[Array, " batch"]
-    """Per-sample masked MSE in augmented-image space, shape [batch]."""
+    """Per-sample masked objective loss in augmented-image space, shape [batch]."""
     point_err_cm: Float[Array, " batch points"]
     """Per-point Euclidean error in centimeters in original-image space, flattened per sample."""
     line_err_cm: Float[Array, " batch lines"]
@@ -346,7 +350,7 @@ def loss_and_aux(
     msg = f"Expected tgt shape [batch, 2, 2, 2], got {batch['tgt'].shape}"
     assert batch["tgt"].shape[1:] == (2, 2, 2), msg
 
-    # 2) Optimization loss path: coordinate MSE or heatmap MSE depending on objective config.
+    # 2) Optimization loss path: coordinate MSE or heatmap MSE/CE depending on objective config.
     if objective_cfg.kind == "heatmap":
         n_channels = len(btx.heatmap.CHANNEL_NAMES)
         msg = "Expected no precomputed heatmap targets in batch for heatmap objective."
@@ -389,15 +393,28 @@ def loss_and_aux(
             f"{heatmap_tgt.shape} and {preds_raw.shape}"
         )
         assert heatmap_tgt.shape == preds_raw.shape, msg
-        sample_loss_raw = jax.vmap(
-            lambda pred_chw, tgt_chw, mask_l: btx.heatmap.heatmap_loss(
-                pred_chw,
-                tgt_chw,
-                mask_l,
-                cfg=heatmap_cfg,
-            )
-        )(preds_raw, heatmap_tgt, mask_line)
-        sample_active_values = jnp.sum(mask_line, axis=1) * (2.0 * h_hm * w_hm)
+        if objective_cfg.heatmap_loss == "mse":
+            sample_loss_raw = jax.vmap(
+                lambda pred_chw, tgt_chw, mask_l: btx.heatmap.heatmap_loss(
+                    pred_chw,
+                    tgt_chw,
+                    mask_l,
+                    cfg=heatmap_cfg,
+                )
+            )(preds_raw, heatmap_tgt, mask_line)
+            sample_active_values = jnp.sum(mask_line, axis=1) * (2.0 * h_hm * w_hm)
+        else:
+            msg = f"Expected heatmap_loss in {{'mse', 'ce'}}, got {objective_cfg.heatmap_loss}"
+            assert objective_cfg.heatmap_loss == "ce", msg
+            sample_loss_raw = jax.vmap(
+                lambda pred_chw, tgt_chw, mask_l: btx.heatmap.heatmap_ce_loss(
+                    pred_chw,
+                    tgt_chw,
+                    mask_l,
+                    cfg=heatmap_cfg,
+                )
+            )(preds_raw, heatmap_tgt, mask_line)
+            sample_active_values = jnp.sum(mask_line, axis=1)
         total_active = jnp.sum(sample_active_values)
         mse = jnp.where(
             total_active > 0.0,
