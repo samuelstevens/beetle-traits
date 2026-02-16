@@ -20,6 +20,7 @@ from jaxtyping import Array, Float, Int, PyTree, jaxtyped
 from PIL import Image, ImageDraw
 
 import btx.data
+import btx.heatmap
 import btx.metrics
 import btx.modeling
 
@@ -285,34 +286,87 @@ def loss_and_aux(
 ) -> tuple[Float[Array, ""], Aux]:
     # 1) Forward pass in augmented-image space.
     model = eqx.combine(diff_model, static_model)
-    preds = jax.vmap(model)(batch["img"])
+    forward = tp.cast(tp.Callable[[Array], Array], model)
+    preds_raw = jax.vmap(forward)(batch["img"])
 
-    # 2) Optimization loss in augmented-image space, masked per line (for datasets with partial labels).
-    squared_error = (preds - batch["tgt"]) ** 2
-    mask = einops.rearrange(batch["loss_mask"], "b l -> b l () ()")
-    masked_error = squared_error * mask
-    # Each active line contributes 2 points x 2 coordinates = 4 scalar values.
-    active_values = jnp.sum(mask) * 4
-    active_values_safe = jnp.maximum(active_values, 1.0)
-    mse = jnp.sum(masked_error) / active_values_safe
-
-    # 3) Per-sample masked loss for validation bookkeeping (e.g., seen vs unseen species).
-    sample_active_values = jnp.sum(mask, axis=(1, 2, 3)) * 4
-    sample_loss = jnp.where(
-        sample_active_values > 0,
-        jnp.sum(masked_error, axis=(1, 2, 3)) / sample_active_values,
-        jnp.nan,
-    )
-
-    # 4) Broadcast masks to line-level and point-level metric tensors.
     mask_line = batch["loss_mask"]
     mask_point = mask_line[:, :, None]
 
-    # 5) Move predictions back to original-image coordinates and resolve endpoint ordering.
+    # 2) Optimization loss path: coordinate MSE or heatmap MSE depending on model output.
+    if "heatmap_tgt" in batch:
+        msg = (
+            "Expected heatmap predictions with shape [batch, 4, H, W], got "
+            f"{preds_raw.shape}"
+        )
+        assert preds_raw.ndim == 4 and preds_raw.shape[1] == 4, msg
+        heatmap_tgt = batch["heatmap_tgt"]
+        msg = (
+            "Expected heatmap_tgt shape to match predictions, got "
+            f"{heatmap_tgt.shape} and {preds_raw.shape}"
+        )
+        assert heatmap_tgt.shape == preds_raw.shape, msg
+
+        _, h_img, w_img, _ = batch["img"].shape
+        msg = f"Expected square input images, got {batch['img'].shape}"
+        assert h_img == w_img, msg
+
+        _, _, h_hm, w_hm = preds_raw.shape
+        msg = f"Expected square heatmaps, got {preds_raw.shape}"
+        assert h_hm == w_hm, msg
+
+        heatmap_cfg = btx.heatmap.Config(
+            image_size=h_img,
+            heatmap_size=h_hm,
+            sigma=1.0,
+        )
+        sample_loss_raw = jax.vmap(
+            lambda pred_chw, tgt_chw, mask_l: btx.heatmap.heatmap_loss(
+                pred_chw,
+                tgt_chw,
+                mask_l,
+                cfg=heatmap_cfg,
+            )
+        )(preds_raw, heatmap_tgt, mask_line)
+        sample_active_values = jnp.sum(mask_line, axis=1) * (2.0 * h_hm * w_hm)
+        total_active = jnp.sum(sample_active_values)
+        mse = jnp.where(
+            total_active > 0.0,
+            jnp.sum(sample_loss_raw * sample_active_values) / total_active,
+            jnp.array(0.0, dtype=preds_raw.dtype),
+        )
+        sample_loss = jnp.where(sample_active_values > 0.0, sample_loss_raw, jnp.nan)
+        preds = jax.vmap(
+            lambda pred_chw: btx.heatmap.heatmaps_to_coords(pred_chw, cfg=heatmap_cfg)
+        )(preds_raw)
+    else:
+        msg = (
+            "Expected coordinate predictions with shape [batch, 2, 2, 2], got "
+            f"{preds_raw.shape}"
+        )
+        assert preds_raw.shape[1:] == (2, 2, 2), msg
+        preds = preds_raw
+
+        squared_error = (preds - batch["tgt"]) ** 2
+        mask = einops.rearrange(mask_line, "b l -> b l () ()")
+        masked_error = squared_error * mask
+        # Each active line contributes 2 points x 2 coordinates = 4 scalar values.
+        active_values = jnp.sum(mask) * 4
+        active_values_safe = jnp.maximum(active_values, 1.0)
+        mse = jnp.sum(masked_error) / active_values_safe
+
+        # Per-sample masked loss for validation bookkeeping (e.g., seen vs unseen species).
+        sample_active_values = jnp.sum(mask, axis=(1, 2, 3)) * 4
+        sample_loss = jnp.where(
+            sample_active_values > 0,
+            jnp.sum(masked_error, axis=(1, 2, 3)) / sample_active_values,
+            jnp.nan,
+        )
+
+    # 3) Move predictions back to original-image coordinates and resolve endpoint ordering.
     preds_orig = btx.metrics.apply_affine(batch["t_orig_from_aug"], preds)
     tgts_orig = btx.metrics.choose_endpoint_matching(preds_orig, batch["points_px"])
 
-    # 6) Compute physical errors in centimeters.
+    # 4) Compute physical errors in centimeters.
     point_err_px_line = jnp.linalg.norm(preds_orig - tgts_orig, axis=-1)
     scalebar_valid, px_per_cm = btx.metrics.get_scalebar_mask(
         batch["scalebar_px"], batch["scalebar_valid"]
@@ -324,7 +378,7 @@ def loss_and_aux(
     preds_line_orig = jnp.linalg.norm(preds_start_orig - preds_end_orig, axis=-1)
     line_err_cm = jnp.abs(preds_line_orig - tgts_line_orig) / px_per_cm[:, None]
 
-    # 7) Apply both supervision and unit-conversion validity masks, then flatten point errors.
+    # 5) Apply both supervision and unit-conversion validity masks, then flatten point errors.
     metric_mask_line = mask_line * scalebar_valid[:, None]
     metric_mask_point = mask_point * scalebar_valid[:, None, None]
     point_err_cm_line = jnp.where(metric_mask_point > 0, point_err_cm_line, jnp.nan)
@@ -333,7 +387,7 @@ def loss_and_aux(
         point_err_cm_line, "batch lines points -> batch (lines points)"
     )
 
-    # 8) Build per-trait summaries and batch-level data quality.
+    # 6) Build per-trait summaries and batch-level data quality.
     width_point_err_cm = jnp.nanmean(point_err_cm_line[:, 0], axis=1)
     length_point_err_cm = jnp.nanmean(point_err_cm_line[:, 1], axis=1)
 
@@ -341,7 +395,7 @@ def loss_and_aux(
     length_line_err_cm = line_err_cm[:, 1]
     oob_points_frac = jnp.nanmean(batch["oob_points_frac"])
 
-    # 9) Package all logging/analysis outputs.
+    # 7) Package all logging/analysis outputs.
     aux = Aux(
         mse,
         preds,
@@ -378,6 +432,26 @@ def step_model(
     return model, new_state, aux
 
 
+@beartype.beartype
+def get_trainable_filter_spec(model: eqx.Module) -> PyTree[bool]:
+    """Build a trainable-parameter mask that freezes ViT and trains non-ViT arrays.
+
+    Args:
+        model: Full model module used for training.
+
+    Returns:
+        Pytree of booleans matching `model` leaves. `True` marks differentiable
+        parameters to optimize, `False` marks frozen/static leaves.
+    """
+    filter_spec = jax.tree_util.tree_map(eqx.is_array, model)
+    if not hasattr(model, "vit"):
+        return filter_spec
+
+    vit = tp.cast(eqx.Module, getattr(model, "vit"))
+    frozen_vit = jax.tree_util.tree_map(lambda _: False, vit)
+    return eqx.tree_at(lambda tree: tree.vit, filter_spec, frozen_vit)
+
+
 @jaxtyped(typechecker=beartype.beartype)
 def plot_preds(
     batch: dict[str, Array],
@@ -385,7 +459,8 @@ def plot_preds(
     preds: Float[Array, "batch 2 2 2"],
     sample_idx: int,
 ) -> tuple[str, Image.Image]:
-    img_fpath = metadata["img_fpath"][sample_idx]
+    img_fpaths = tp.cast(list[str], metadata["img_fpath"])
+    img_fpath = img_fpaths[sample_idx]
     img = Image.open(img_fpath)
 
     # Get ground truth points in original image coordinates.
@@ -431,7 +506,8 @@ def plot_preds(
         draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=(255, 0, 0))
 
     # Extract individual ID from filepath
-    beetle_id = metadata["beetle_id"][sample_idx]
+    beetle_ids = tp.cast(list[str], metadata["beetle_id"])
+    beetle_id = beetle_ids[sample_idx]
 
     return beetle_id, img
 
@@ -754,17 +830,8 @@ def train(cfg: Config):
     
     model = btx.modeling.make(cfg.model, key)
 
-    # Freeze the Vit
-
-    # Step 1 create the filter_specification
-    # Create a pytree with the same shape as model setting each leaf to false
-    filter_spec = jax.tree_util.tree_map(lambda _: False, model)
-    # If a leaf is part of the head, make it trainable
-    filter_spec = eqx.tree_at(
-        lambda tree: tree.head,
-        filter_spec,
-        jax.tree_util.tree_map(eqx.is_array, model.head),
-    )
+    # Freeze ViT arrays, optimize non-ViT arrays.
+    filter_spec = get_trainable_filter_spec(model)
 
     # Optimize only the differentiable part of the model.
     diff_model, _ = eqx.partition(model, filter_spec)
