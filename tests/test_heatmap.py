@@ -128,7 +128,7 @@ def test_heatmaps_to_coords_returns_line_endpoint_coordinates():
 
     coords_l22 = btx.heatmap.heatmaps_to_coords(logits_chw, cfg=cfg)
     assert coords_l22.shape == (2, 2, 2)
-    np.testing.assert_allclose(coords_l22, 127.5, atol=1e-4)
+    np.testing.assert_allclose(coords_l22, 127.5, atol=0)
 
 
 def test_heatmaps_to_coords_decodes_perfect_gaussian_logit_without_bias():
@@ -144,7 +144,7 @@ def test_heatmaps_to_coords_decodes_perfect_gaussian_logit_without_bias():
     logits_chw = jnp.log(jnp.maximum(tgt_chw, cfg.eps))
     decoded_l22 = btx.heatmap.heatmaps_to_coords(logits_chw, cfg=cfg)
 
-    np.testing.assert_allclose(decoded_l22[0, 0], points_l22[0, 0], atol=1e-2)
+    np.testing.assert_allclose(decoded_l22[1, 0], points_l22[1, 0], atol=1e-3)
 
 
 def test_heatmap_loss_zero_when_predictions_match_targets():
@@ -461,7 +461,7 @@ def test_get_diagnostics_flags_uniform_maps():
     )
 
     np.testing.assert_allclose(max_logit_bc, 0.0, atol=1e-7)
-    np.testing.assert_allclose(entropy_bc, np.log(np.array(64 * 64)), atol=1e-3)
+    np.testing.assert_allclose(entropy_bc, np.log(np.array(64 * 64)), atol=1e-6)
     np.testing.assert_allclose(near_uniform_bc, 1.0, atol=1e-7)
 
 
