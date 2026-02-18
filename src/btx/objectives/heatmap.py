@@ -10,9 +10,12 @@ more than two endpoints), update `CHANNEL_NAMES` and the reshape assumptions in
 import dataclasses
 
 import beartype
+import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 from jaxtyping import Array, Float, jaxtyped
+
+from btx.objectives import LossAux, Obj
 
 CHANNEL_NAMES = ("width_p0", "width_p1", "length_p0", "length_p1")
 NEAR_UNIFORM_ENTROPY_FRAC = 0.98
@@ -46,16 +49,16 @@ class Config:
         assert self.sigma > 0.0, msg
         msg = f"Expected positive eps, got {self.eps}"
         assert self.eps > 0.0, msg
-        msg = (
-            "Expected integer downsample ratio between image and heatmap sizes, got "
-            f"image_size={self.image_size}, heatmap_size={self.heatmap_size}"
-        )
+        msg = f"Expected integer downsample ratio between image and heatmap sizes, got image_size={self.image_size}, heatmap_size={self.heatmap_size}"
         assert self.image_size % self.heatmap_size == 0, msg
 
     @property
     def downsample(self) -> int:
         """Integer image-to-heatmap stride (`image_size // heatmap_size`)."""
         return self.image_size // self.heatmap_size
+
+    def get_obj(self) -> Obj:
+        return HeatmapObj(self)
 
 
 @jaxtyped(typechecker=beartype.beartype)
@@ -100,15 +103,9 @@ def _get_softargmax_axis(*, cfg: Config) -> Float[Array, " heatmap"]:
         cfg: Heatmap geometry and numerical configuration.
 
     Returns:
-        Monotonic coordinate axis with `cfg.heatmap_size` entries spanning
-        `[-0.5, heatmap_size - 0.5]`.
+        Monotonic coordinate axis with `cfg.heatmap_size` entries spanning `[0, heatmap_size - 1]`.
     """
-    return jnp.linspace(
-        -0.5,
-        cfg.heatmap_size - 0.5,
-        cfg.heatmap_size,
-        dtype=jnp.float32,
-    )
+    return jnp.arange(cfg.heatmap_size, dtype=jnp.float32)
 
 
 @jaxtyped(typechecker=beartype.beartype)
@@ -125,10 +122,7 @@ def _softargmax_points(
         Decoded heatmap-space coordinates with shape `[n_keypoints, 2]`.
 
     """
-    msg = (
-        "Expected square logits matching heatmap config. "
-        f"Got logits {logits_nhw.shape} and heatmap_size {cfg.heatmap_size}."
-    )
+    msg = f"Expected square logits matching heatmap config. Got logits {logits_nhw.shape} and heatmap_size {cfg.heatmap_size}."
     assert logits_nhw.ndim == 3, msg
     assert logits_nhw.shape[1:] == (cfg.heatmap_size, cfg.heatmap_size), msg
     n, h, w = logits_nhw.shape
@@ -291,8 +285,7 @@ def make_targets(
     """Build endpoint heatmap targets from line-endpoint coordinates.
 
     Args:
-        points_l22: Line-endpoint coordinates in image space with shape
-            `[line, endpoint, (x, y)]`.
+        points_l22: Line-endpoint coordinates in image space with shape `[line, endpoint, (x, y)]`.
         cfg: Heatmap geometry and numerical configuration.
 
     Returns:
@@ -317,8 +310,7 @@ def heatmap_loss(
     """Compute permutation-invariant masked MSE for endpoint heatmaps.
 
     Args:
-        pred_chw: Predicted heatmap logits with channel order
-            `[width_p0, width_p1, length_p0, length_p1]`.
+        pred_chw: Predicted heatmap logits with channel order `[width_p0, width_p1, length_p0, length_p1]`.
         tgt_chw: Target endpoint heatmaps with the same channel order as `pred_chw`.
         loss_mask_l: Per-line supervision mask for `[width, length]`.
         cfg: Heatmap geometry and numerical configuration.
@@ -333,12 +325,7 @@ def heatmap_loss(
     assert tgt_chw.shape == pred_chw.shape, msg
     msg = f"Expected loss_mask shape (2,), got {loss_mask_l.shape}"
     assert loss_mask_l.shape == (2,), msg
-    return _line_loss_permutation_invariant(
-        pred_chw,
-        tgt_chw,
-        loss_mask_l,
-        cfg=cfg,
-    )
+    return _line_loss_permutation_invariant(pred_chw, tgt_chw, loss_mask_l, cfg=cfg)
 
 
 @jaxtyped(typechecker=beartype.beartype)
@@ -357,12 +344,7 @@ def heatmap_ce_loss(
     assert tgt_chw.shape == pred_chw.shape, msg
     msg = f"Expected loss_mask shape (2,), got {loss_mask_l.shape}"
     assert loss_mask_l.shape == (2,), msg
-    return _line_ce_loss_permutation_invariant(
-        pred_chw,
-        tgt_chw,
-        loss_mask_l,
-        cfg=cfg,
-    )
+    return _line_ce_loss_permutation_invariant(pred_chw, tgt_chw, loss_mask_l, cfg=cfg)
 
 
 @jaxtyped(typechecker=beartype.beartype)
@@ -372,21 +354,16 @@ def heatmaps_to_coords(
     """Decode four endpoint heatmaps into line-endpoint coordinates.
 
     Args:
-        logits_chw: Predicted endpoint logits with channel order
-            `[width_p0, width_p1, length_p0, length_p1]`.
+        logits_chw: Predicted endpoint logits with channel order `[width_p0, width_p1, length_p0, length_p1]`.
         cfg: Heatmap geometry and numerical configuration.
 
     Returns:
-        Coordinates in image space with shape `[2, 2, 2]` and order
-        `[line, endpoint, (x, y)]`.
+        Coordinates in image space with shape `[2, 2, 2]` and order `[line, endpoint, (x, y)]`.
     """
     n_channels = len(CHANNEL_NAMES)
     msg = f"Expected logits shape ({n_channels}, H, W), got {logits_chw.shape}"
     assert logits_chw.ndim == 3 and logits_chw.shape[0] == n_channels, msg
-    msg = (
-        "Expected logits to match heatmap config size, got "
-        f"{logits_chw.shape[1:]} and {cfg.heatmap_size}."
-    )
+    msg = f"Expected logits to match heatmap config size, got {logits_chw.shape[1:]} and {cfg.heatmap_size}."
     assert logits_chw.shape[1:] == (cfg.heatmap_size, cfg.heatmap_size), msg
     points_hm_n2 = _softargmax_points(logits_chw, cfg=cfg)
     points_img_n2 = heatmap_to_image_udp(points_hm_n2, cfg=cfg)
@@ -419,10 +396,7 @@ def get_diagnostics(
     _, _, h_hm, w_hm = logits_bchw.shape
     msg = f"Expected square heatmaps, got {logits_bchw.shape}"
     assert h_hm == w_hm, msg
-    msg = (
-        "Expected logits spatial size to match cfg.heatmap_size, got "
-        f"{(h_hm, w_hm)} and cfg.heatmap_size={cfg.heatmap_size}"
-    )
+    msg = f"Expected logits spatial size to match cfg.heatmap_size, got {(h_hm, w_hm)} and cfg.heatmap_size={cfg.heatmap_size}"
     assert (h_hm, w_hm) == (cfg.heatmap_size, cfg.heatmap_size), msg
 
     max_logit_bc = jnp.max(logits_bchw, axis=(2, 3))
@@ -439,3 +413,70 @@ def get_diagnostics(
         entropy_bc.dtype
     )
     return max_logit_bc, entropy_bc, near_uniform_bc
+
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
+class HeatmapObj(Obj):
+    cfg: Config
+
+    @property
+    def key(self) -> str:
+        return "heatmap"
+
+    def get_loss_aux(
+        self, *, preds_raw: jax.Array, batch: dict[str, jax.Array], mask_line: jax.Array
+    ) -> LossAux:
+        heatmap_cfg = self.cfg
+        n_channels = len(CHANNEL_NAMES)
+        msg = "Expected no precomputed heatmap targets in batch for heatmap objective."
+        assert "heatmap_tgt" not in batch, msg
+        msg = f"Expected heatmap predictions with shape [batch, {n_channels}, H, W], got {preds_raw.shape}"
+        assert preds_raw.ndim == 4 and preds_raw.shape[1] == n_channels, msg
+
+        _, h_img, w_img, _ = batch["img"].shape
+        msg = f"Expected square input images matching cfg, got image shape {batch['img'].shape} and cfg.image_size={heatmap_cfg.image_size}"
+        assert h_img == w_img == heatmap_cfg.image_size, msg
+
+        _, _, h_hm, w_hm = preds_raw.shape
+        msg = f"Expected square heatmaps, got {preds_raw.shape}"
+        assert h_hm == w_hm, msg
+        msg = f"Expected heatmap_size from cfg to match batch heatmaps, got cfg.heatmap_size={heatmap_cfg.heatmap_size} and batch={h_hm}"
+        assert h_hm == heatmap_cfg.heatmap_size, msg
+        heatmap_tgt = jax.vmap(
+            lambda points_l22: make_targets(points_l22, cfg=heatmap_cfg)
+        )(batch["tgt"])
+        msg = f"Expected generated heatmap targets shape to match predictions, got {heatmap_tgt.shape} and {preds_raw.shape}"
+        assert heatmap_tgt.shape == preds_raw.shape, msg
+
+        sample_loss_raw = jax.vmap(
+            lambda pred_chw, tgt_chw, mask_l: heatmap_ce_loss(
+                pred_chw, tgt_chw, mask_l, cfg=heatmap_cfg
+            )
+        )(preds_raw, heatmap_tgt, mask_line)
+        sample_active_values = jnp.sum(mask_line, axis=1)
+        weighted_sum = jnp.sum(sample_loss_raw * sample_active_values)
+        total_active = jnp.sum(sample_active_values)
+        total_active_safe = jnp.maximum(total_active, 1.0)
+        loss = weighted_sum / total_active_safe
+        sample_loss = jnp.where(sample_active_values > 0.0, sample_loss_raw, jnp.nan)
+
+        preds = jax.vmap(
+            lambda pred_chw: heatmaps_to_coords(pred_chw, cfg=heatmap_cfg)
+        )(preds_raw)
+        heatmap_max_logit, heatmap_entropy, heatmap_near_uniform = get_diagnostics(
+            preds_raw, cfg=heatmap_cfg
+        )
+        metrics = {}
+        for i, channel_name in enumerate(CHANNEL_NAMES):
+            metrics[f"heatmap_max_logit_{channel_name}"] = heatmap_max_logit[:, i]
+            metrics[f"heatmap_entropy_{channel_name}"] = heatmap_entropy[:, i]
+            metrics[f"heatmap_near_uniform_frac_{channel_name}"] = heatmap_near_uniform[
+                :, i
+            ]
+        return LossAux(
+            loss=loss,
+            sample_loss=sample_loss,
+            preds=preds,
+            metrics=metrics,
+        )
