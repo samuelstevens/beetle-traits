@@ -18,6 +18,7 @@ def _():
     import btx.data
     import btx.metrics
     import btx.objectives.heatmap
+
     return Image, btx, copy, jnp, np, pathlib, plt
 
 
@@ -153,6 +154,7 @@ def _(btx, copy, jnp, np):
             markersize=4,
             alpha=alpha,
         )
+
     return get_heatmap_views, plot_lines, run_pre_heatmap_pipeline
 
 
@@ -251,6 +253,27 @@ def _(
         fontsize=12,
     )
     fig
+    return
+
+
+@app.cell
+def _():
+    import marimo as _mo
+
+    _mo.md(
+        """
+        ## Color Legend
+
+        - `cyan`: width ground-truth line/endpoints
+        - `magenta`: length ground-truth line/endpoints
+        - `lime`: width softargmax prediction
+        - `yellow`: length softargmax prediction
+        - `orange`: width hard argmax prediction
+        - `red`: length hard argmax prediction
+        - `white` connector segment: distance between softargmax and hard argmax endpoint predictions
+        - `magma` heat overlay: maximum intensity over the 4 target heatmap channels
+        """
+    )
     return
 
 
