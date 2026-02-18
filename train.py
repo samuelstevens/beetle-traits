@@ -80,7 +80,7 @@ class Config:
     """Total number of training steps."""
     log_to: pathlib.Path = pathlib.Path("./logs")
     learning_rate: float = 3e-4
-    schedule: tp.Literal["cosine", "wsd"] = "cosine"
+    schedule: tp.Literal["cosine", "wsd", "none"] = "cosine"
     """LR schedule: 'cosine' (warmup + cosine decay) or 'wsd' (warmup-stable-decay)."""
     warmup_steps: int = 0
     """Number of warmup steps for learning rate schedules."""
@@ -779,6 +779,8 @@ def train(cfg: Config):
             decay_steps=cfg.n_steps,
             end_value=0.0,
         )
+    elif cfg.schedule == "none":
+        schedule = cfg.learning_rate
     else:
         tp.assert_never(cfg.schedule)
 
