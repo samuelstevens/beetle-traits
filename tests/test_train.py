@@ -11,7 +11,8 @@ from hypothesis.extra import numpy as hnp
 
 import btx.data
 import btx.data.transforms
-import btx.heatmap
+import btx.objectives
+import btx.objectives.heatmap
 
 train_fpath = pathlib.Path(__file__).resolve().parents[1] / "train.py"
 spec = importlib.util.spec_from_file_location("train_script", train_fpath)
@@ -19,13 +20,10 @@ assert spec is not None and spec.loader is not None
 train = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(train)
 
-COORD_OBJECTIVE = train.ObjectiveConfig(kind="coords")
-HEATMAP_OBJECTIVE = train.ObjectiveConfig(
-    kind="heatmap",
-    heatmap_size=64,
-    sigma=2.0,
-    heatmap_loss="mse",
-)
+COORD_OBJECTIVE = btx.objectives.Coords()
+HEATMAP_OBJECTIVE = btx.objectives.Heatmap(heatmap_size=64, sigma=2.0)
+COORD_OBJ = COORD_OBJECTIVE.get_obj()
+HEATMAP_OBJ = HEATMAP_OBJECTIVE.get_obj()
 
 
 class ConstantModel(eqx.Module):
@@ -137,23 +135,25 @@ def test_get_augment_for_dataset_returns_dataset_specific_configs():
     assert got_biorepo.crop_scale_min == 0.9
 
 
-def test_objective_config_asserts_on_invalid_fields():
-    with np.testing.assert_raises(Exception):
-        _ = train.ObjectiveConfig(kind="bad")
+def test_train_config_defaults_to_coords_objective():
+    cfg = train.Config()
+    assert isinstance(cfg.objective, btx.objectives.Coords)
+
+
+def test_heatmap_objective_asserts_on_invalid_fields():
     with np.testing.assert_raises_regex(AssertionError, "positive heatmap_size"):
-        _ = train.ObjectiveConfig(kind="heatmap", heatmap_size=0)
+        _ = btx.objectives.Heatmap(heatmap_size=0)
     with np.testing.assert_raises_regex(AssertionError, "positive sigma"):
-        _ = train.ObjectiveConfig(kind="heatmap", sigma=0.0)
+        _ = btx.objectives.Heatmap(sigma=0.0)
+    with np.testing.assert_raises_regex(AssertionError, "positive eps"):
+        _ = btx.objectives.Heatmap(eps=0.0)
 
 
-def test_objective_config_defaults_heatmap_loss_to_ce():
-    cfg = train.ObjectiveConfig(kind="heatmap")
-    assert cfg.heatmap_loss == "ce"
-
-
-def test_objective_config_asserts_on_invalid_heatmap_loss():
-    with np.testing.assert_raises(Exception):
-        _ = train.ObjectiveConfig(kind="heatmap", heatmap_loss="bad")
+def test_get_obj_dispatches_to_matching_runtime_objective():
+    coords = btx.objectives.Coords()
+    heatmap = btx.objectives.Heatmap()
+    assert isinstance(coords.get_obj(), btx.objectives.CoordsObj)
+    assert isinstance(heatmap.get_obj(), btx.objectives.HeatmapObj)
 
 
 def test_loss_and_aux_asserts_on_missing_required_batch_key():
@@ -170,9 +170,7 @@ def test_loss_and_aux_asserts_on_missing_required_batch_key():
     }
 
     with np.testing.assert_raises_regex(AssertionError, "points_px"):
-        _ = train.loss_and_aux(
-            diff_model, static_model, batch, objective_cfg=COORD_OBJECTIVE
-        )
+        _ = train.loss_and_aux(diff_model, static_model, batch, obj=COORD_OBJ)
 
 
 def test_loss_and_aux_masks_cm_metrics_and_reports_oob_points_frac():
@@ -189,9 +187,7 @@ def test_loss_and_aux_masks_cm_metrics_and_reports_oob_points_frac():
         "oob_points_frac": jnp.array([0.25], dtype=jnp.float32),
     }
 
-    loss, aux = train.loss_and_aux(
-        diff_model, static_model, batch, objective_cfg=COORD_OBJECTIVE
-    )
+    loss, aux = train.loss_and_aux(diff_model, static_model, batch, obj=COORD_OBJ)
 
     assert float(loss) == 0.0
     assert np.isnan(np.asarray(aux.point_err_cm)).all()
@@ -223,9 +219,7 @@ def test_loss_and_aux_uses_order_invariant_endpoint_matching():
         "oob_points_frac": jnp.array([0.0], dtype=jnp.float32),
     }
 
-    _, aux = train.loss_and_aux(
-        diff_model, static_model, batch, objective_cfg=COORD_OBJECTIVE
-    )
+    _, aux = train.loss_and_aux(diff_model, static_model, batch, obj=COORD_OBJ)
     np.testing.assert_allclose(np.asarray(aux.point_err_cm), 0.0, atol=1e-7)
     np.testing.assert_allclose(np.asarray(aux.line_err_cm), 0.0, atol=1e-7)
 
@@ -253,9 +247,7 @@ def test_loss_and_aux_weights_global_loss_by_active_targets():
         "oob_points_frac": jnp.array([0.0, 0.0], dtype=jnp.float32),
     }
 
-    loss, aux = train.loss_and_aux(
-        diff_model, static_model, batch, objective_cfg=COORD_OBJECTIVE
-    )
+    loss, aux = train.loss_and_aux(diff_model, static_model, batch, obj=COORD_OBJ)
 
     np.testing.assert_allclose(np.asarray(aux.sample_loss), np.array([1.0, 4.0]))
     np.testing.assert_allclose(np.asarray(loss), np.array(2.0))
@@ -284,9 +276,7 @@ def test_loss_and_aux_marks_sample_loss_nan_when_sample_is_fully_masked():
         "oob_points_frac": jnp.array([0.0, 0.0], dtype=jnp.float32),
     }
 
-    loss, aux = train.loss_and_aux(
-        diff_model, static_model, batch, objective_cfg=COORD_OBJECTIVE
-    )
+    loss, aux = train.loss_and_aux(diff_model, static_model, batch, obj=COORD_OBJ)
 
     sample_loss = np.asarray(aux.sample_loss)
     np.testing.assert_allclose(sample_loss[0], np.array(1.0))
@@ -315,16 +305,12 @@ def test_loss_and_aux_returns_zero_loss_and_zero_grads_when_all_targets_masked()
     }
 
     def loss_only(diff_model, static_model):
-        loss, _ = train.loss_and_aux(
-            diff_model, static_model, batch, objective_cfg=COORD_OBJECTIVE
-        )
+        loss, _ = train.loss_and_aux(diff_model, static_model, batch, obj=COORD_OBJ)
         return loss
 
     loss_grad_fn = eqx.filter_value_and_grad(loss_only)
     loss, grads = loss_grad_fn(diff_model, static_model)
-    _, aux = train.loss_and_aux(
-        diff_model, static_model, batch, objective_cfg=COORD_OBJECTIVE
-    )
+    _, aux = train.loss_and_aux(diff_model, static_model, batch, obj=COORD_OBJ)
 
     np.testing.assert_allclose(np.asarray(loss), np.array(0.0))
     grad = np.asarray(grads.pred_l22)
@@ -348,9 +334,7 @@ def test_loss_and_aux_uses_generated_heatmap_targets_from_tgt():
         "oob_points_frac": jnp.array([0.0], dtype=jnp.float32),
     }
 
-    loss, aux = train.loss_and_aux(
-        diff_model, static_model, batch, objective_cfg=HEATMAP_OBJECTIVE
-    )
+    loss, aux = train.loss_and_aux(diff_model, static_model, batch, obj=HEATMAP_OBJ)
 
     np.testing.assert_allclose(np.asarray(loss), np.array(0.0))
     np.testing.assert_allclose(np.asarray(aux.sample_loss), np.array([0.0]))
@@ -371,24 +355,46 @@ def test_loss_and_aux_heatmap_reports_uniform_map_diagnostics():
         "t_orig_from_aug": jnp.eye(3, dtype=jnp.float32)[None, :, :],
         "oob_points_frac": jnp.array([0.0], dtype=jnp.float32),
     }
-    _, aux = train.loss_and_aux(
-        diff_model, static_model, batch, objective_cfg=HEATMAP_OBJECTIVE
+    _, aux = train.loss_and_aux(diff_model, static_model, batch, obj=HEATMAP_OBJ)
+
+    max_logit = np.stack(
+        [
+            np.asarray(aux.obj_metrics[f"heatmap/heatmap_max_logit_{channel_name}"])
+            for channel_name in btx.objectives.heatmap.CHANNEL_NAMES
+        ],
+        axis=1,
+    )
+    entropy = np.stack(
+        [
+            np.asarray(aux.obj_metrics[f"heatmap/heatmap_entropy_{channel_name}"])
+            for channel_name in btx.objectives.heatmap.CHANNEL_NAMES
+        ],
+        axis=1,
+    )
+    near_uniform = np.stack(
+        [
+            np.asarray(
+                aux.obj_metrics[f"heatmap/heatmap_near_uniform_frac_{channel_name}"]
+            )
+            for channel_name in btx.objectives.heatmap.CHANNEL_NAMES
+        ],
+        axis=1,
     )
 
-    assert aux.heatmap_max_logit.shape == (1, 4)
-    assert aux.heatmap_entropy.shape == (1, 4)
-    assert aux.heatmap_near_uniform.shape == (1, 4)
-    np.testing.assert_allclose(np.asarray(aux.heatmap_max_logit), 0.0, atol=1e-7)
+    assert max_logit.shape == (1, 4)
+    assert entropy.shape == (1, 4)
+    assert near_uniform.shape == (1, 4)
+    np.testing.assert_allclose(max_logit, 0.0, atol=1e-7)
     np.testing.assert_allclose(
-        np.asarray(aux.heatmap_entropy),
+        entropy,
         np.log(np.array(64 * 64, dtype=np.float32)),
         atol=1e-3,
     )
-    np.testing.assert_allclose(np.asarray(aux.heatmap_near_uniform), 1.0, atol=1e-7)
+    np.testing.assert_allclose(near_uniform, 1.0, atol=1e-7)
 
     metrics = aux.metrics()
-    for channel_name in btx.heatmap.CHANNEL_NAMES:
-        key = f"heatmap_near_uniform_frac_{channel_name}"
+    for channel_name in btx.objectives.heatmap.CHANNEL_NAMES:
+        key = f"heatmap/heatmap_near_uniform_frac_{channel_name}"
         assert key in metrics
         np.testing.assert_allclose(np.asarray(metrics[key]), 1.0, atol=1e-7)
 
@@ -411,19 +417,41 @@ def test_loss_and_aux_heatmap_reports_spiky_map_diagnostics():
         "t_orig_from_aug": jnp.eye(3, dtype=jnp.float32)[None, :, :],
         "oob_points_frac": jnp.array([0.0], dtype=jnp.float32),
     }
-    _, aux = train.loss_and_aux(
-        diff_model, static_model, batch, objective_cfg=HEATMAP_OBJECTIVE
+    _, aux = train.loss_and_aux(diff_model, static_model, batch, obj=HEATMAP_OBJ)
+
+    max_logit = np.stack(
+        [
+            np.asarray(aux.obj_metrics[f"heatmap/heatmap_max_logit_{channel_name}"])
+            for channel_name in btx.objectives.heatmap.CHANNEL_NAMES
+        ],
+        axis=1,
+    )
+    entropy = np.stack(
+        [
+            np.asarray(aux.obj_metrics[f"heatmap/heatmap_entropy_{channel_name}"])
+            for channel_name in btx.objectives.heatmap.CHANNEL_NAMES
+        ],
+        axis=1,
+    )
+    near_uniform = np.stack(
+        [
+            np.asarray(
+                aux.obj_metrics[f"heatmap/heatmap_near_uniform_frac_{channel_name}"]
+            )
+            for channel_name in btx.objectives.heatmap.CHANNEL_NAMES
+        ],
+        axis=1,
     )
 
-    np.testing.assert_allclose(np.asarray(aux.heatmap_max_logit), 10.0, atol=1e-7)
-    np.testing.assert_allclose(np.asarray(aux.heatmap_near_uniform), 0.0, atol=1e-7)
-    assert np.all(np.asarray(aux.heatmap_entropy) < 1.0)
+    np.testing.assert_allclose(max_logit, 10.0, atol=1e-7)
+    np.testing.assert_allclose(near_uniform, 0.0, atol=1e-7)
+    assert np.all(entropy < 1.0)
 
     metrics = aux.metrics()
-    for channel_name in btx.heatmap.CHANNEL_NAMES:
-        max_key = f"heatmap_max_logit_{channel_name}"
-        ent_key = f"heatmap_entropy_{channel_name}"
-        uni_key = f"heatmap_near_uniform_frac_{channel_name}"
+    for channel_name in btx.objectives.heatmap.CHANNEL_NAMES:
+        max_key = f"heatmap/heatmap_max_logit_{channel_name}"
+        ent_key = f"heatmap/heatmap_entropy_{channel_name}"
+        uni_key = f"heatmap/heatmap_near_uniform_frac_{channel_name}"
         assert max_key in metrics
         assert ent_key in metrics
         assert uni_key in metrics
@@ -445,16 +473,12 @@ def test_loss_and_aux_coords_sets_heatmap_diagnostics_to_nan():
         "t_orig_from_aug": jnp.eye(3, dtype=jnp.float32)[None, :, :],
         "oob_points_frac": jnp.array([0.0], dtype=jnp.float32),
     }
-    _, aux = train.loss_and_aux(
-        diff_model, static_model, batch, objective_cfg=COORD_OBJECTIVE
-    )
+    _, aux = train.loss_and_aux(diff_model, static_model, batch, obj=COORD_OBJ)
 
-    assert np.isnan(np.asarray(aux.heatmap_max_logit)).all()
-    assert np.isnan(np.asarray(aux.heatmap_entropy)).all()
-    assert np.isnan(np.asarray(aux.heatmap_near_uniform)).all()
+    assert aux.obj_metrics == {}
 
 
-def test_loss_and_aux_heatmap_weights_global_loss_by_active_elements():
+def test_loss_and_aux_heatmap_weights_global_loss_by_active_lines():
     model = ConstantHeatmapModel(pred_chw=jnp.zeros((4, 64, 64), dtype=jnp.float32))
     diff_model, static_model = _partition_model(model)
     batch = {
@@ -478,20 +502,20 @@ def test_loss_and_aux_heatmap_weights_global_loss_by_active_elements():
         ),
         "oob_points_frac": jnp.array([0.0, 0.0], dtype=jnp.float32),
     }
-    loss, aux = train.loss_and_aux(
-        diff_model, static_model, batch, objective_cfg=HEATMAP_OBJECTIVE
+    loss, aux = train.loss_and_aux(diff_model, static_model, batch, obj=HEATMAP_OBJ)
+    heatmap_cfg = btx.objectives.heatmap.Config(
+        image_size=256, heatmap_size=64, sigma=2.0
     )
-    heatmap_cfg = btx.heatmap.Config(image_size=256, heatmap_size=64, sigma=2.0)
     pred0 = jnp.zeros((4, 64, 64), dtype=jnp.float32)
-    tgt0 = btx.heatmap.make_targets(batch["tgt"][0], cfg=heatmap_cfg)
-    tgt1 = btx.heatmap.make_targets(batch["tgt"][1], cfg=heatmap_cfg)
-    loss0 = btx.heatmap.heatmap_loss(
+    tgt0 = btx.objectives.heatmap.make_targets(batch["tgt"][0], cfg=heatmap_cfg)
+    tgt1 = btx.objectives.heatmap.make_targets(batch["tgt"][1], cfg=heatmap_cfg)
+    loss0 = btx.objectives.heatmap.heatmap_ce_loss(
         pred0, tgt0, batch["loss_mask"][0], cfg=heatmap_cfg
     )
-    loss1 = btx.heatmap.heatmap_loss(
+    loss1 = btx.objectives.heatmap.heatmap_ce_loss(
         pred0, tgt1, batch["loss_mask"][1], cfg=heatmap_cfg
     )
-    active = np.array([2.0 * 64 * 64, 1.0 * 64 * 64], dtype=np.float32)
+    active = np.array([2.0, 1.0], dtype=np.float32)
     expected_loss = (float(loss0) * active[0] + float(loss1) * active[1]) / float(
         active.sum()
     )
@@ -524,24 +548,20 @@ def test_loss_and_aux_heatmap_ce_weights_global_loss_by_active_lines():
         ),
         "oob_points_frac": jnp.array([0.0, 0.0], dtype=jnp.float32),
     }
-    objective_cfg = train.ObjectiveConfig(
-        kind="heatmap",
-        heatmap_size=64,
-        sigma=2.0,
-        heatmap_loss="ce",
-    )
+    obj_cfg = btx.objectives.Heatmap(heatmap_size=64, sigma=2.0)
+    obj = obj_cfg.get_obj()
 
-    loss, aux = train.loss_and_aux(
-        diff_model, static_model, batch, objective_cfg=objective_cfg
+    loss, aux = train.loss_and_aux(diff_model, static_model, batch, obj=obj)
+    heatmap_cfg = btx.objectives.heatmap.Config(
+        image_size=256, heatmap_size=64, sigma=2.0
     )
-    heatmap_cfg = btx.heatmap.Config(image_size=256, heatmap_size=64, sigma=2.0)
     pred0 = jnp.zeros((4, 64, 64), dtype=jnp.float32)
-    tgt0 = btx.heatmap.make_targets(batch["tgt"][0], cfg=heatmap_cfg)
-    tgt1 = btx.heatmap.make_targets(batch["tgt"][1], cfg=heatmap_cfg)
-    loss0 = btx.heatmap.heatmap_ce_loss(
+    tgt0 = btx.objectives.heatmap.make_targets(batch["tgt"][0], cfg=heatmap_cfg)
+    tgt1 = btx.objectives.heatmap.make_targets(batch["tgt"][1], cfg=heatmap_cfg)
+    loss0 = btx.objectives.heatmap.heatmap_ce_loss(
         pred0, tgt0, batch["loss_mask"][0], cfg=heatmap_cfg
     )
-    loss1 = btx.heatmap.heatmap_ce_loss(
+    loss1 = btx.objectives.heatmap.heatmap_ce_loss(
         pred0, tgt1, batch["loss_mask"][1], cfg=heatmap_cfg
     )
     active = np.array([2.0, 1.0], dtype=np.float32)
@@ -599,23 +619,19 @@ def test_loss_and_aux_heatmap_ce_batch_aggregation_matches_manual_random_masks(
         ),
         "oob_points_frac": jnp.array([0.0, 0.0], dtype=jnp.float32),
     }
-    objective_cfg = train.ObjectiveConfig(
-        kind="heatmap",
-        heatmap_size=64,
-        sigma=2.0,
-        heatmap_loss="ce",
+    obj_cfg = btx.objectives.Heatmap(heatmap_size=64, sigma=2.0)
+    obj = obj_cfg.get_obj()
+    loss, aux = train.loss_and_aux(diff_model, static_model, batch, obj=obj)
+    heatmap_cfg = btx.objectives.heatmap.Config(
+        image_size=256, heatmap_size=64, sigma=2.0
     )
-    loss, aux = train.loss_and_aux(
-        diff_model, static_model, batch, objective_cfg=objective_cfg
-    )
-    heatmap_cfg = btx.heatmap.Config(image_size=256, heatmap_size=64, sigma=2.0)
     pred = jnp.asarray(pred_chw, dtype=jnp.float32)
-    tgt0 = btx.heatmap.make_targets(batch["tgt"][0], cfg=heatmap_cfg)
-    tgt1 = btx.heatmap.make_targets(batch["tgt"][1], cfg=heatmap_cfg)
-    loss0 = btx.heatmap.heatmap_ce_loss(
+    tgt0 = btx.objectives.heatmap.make_targets(batch["tgt"][0], cfg=heatmap_cfg)
+    tgt1 = btx.objectives.heatmap.make_targets(batch["tgt"][1], cfg=heatmap_cfg)
+    loss0 = btx.objectives.heatmap.heatmap_ce_loss(
         pred, tgt0, batch["loss_mask"][0], cfg=heatmap_cfg
     )
-    loss1 = btx.heatmap.heatmap_ce_loss(
+    loss1 = btx.objectives.heatmap.heatmap_ce_loss(
         pred, tgt1, batch["loss_mask"][1], cfg=heatmap_cfg
     )
     active = np.asarray(np.sum(mask, axis=1), dtype=np.float32)
@@ -656,24 +672,16 @@ def test_loss_and_aux_heatmap_ce_all_targets_masked_zero_loss_zero_grads():
         ),
         "oob_points_frac": jnp.array([0.0, 0.0], dtype=jnp.float32),
     }
-    objective_cfg = train.ObjectiveConfig(
-        kind="heatmap",
-        heatmap_size=64,
-        sigma=2.0,
-        heatmap_loss="ce",
-    )
+    obj_cfg = btx.objectives.Heatmap(heatmap_size=64, sigma=2.0)
+    obj = obj_cfg.get_obj()
 
     def loss_only(diff_model, static_model):
-        loss, _ = train.loss_and_aux(
-            diff_model, static_model, batch, objective_cfg=objective_cfg
-        )
+        loss, _ = train.loss_and_aux(diff_model, static_model, batch, obj=obj)
         return loss
 
     loss_grad_fn = eqx.filter_value_and_grad(loss_only)
     loss, grads = loss_grad_fn(diff_model, static_model)
-    _, aux = train.loss_and_aux(
-        diff_model, static_model, batch, objective_cfg=objective_cfg
-    )
+    _, aux = train.loss_and_aux(diff_model, static_model, batch, obj=obj)
 
     np.testing.assert_allclose(np.asarray(loss), np.array(0.0))
     grad = np.asarray(grads.pred_chw)
@@ -700,9 +708,7 @@ def test_loss_and_aux_heatmap_rejects_precomputed_heatmap_targets_in_batch():
     with np.testing.assert_raises_regex(
         AssertionError, "no precomputed heatmap targets"
     ):
-        _ = train.loss_and_aux(
-            diff_model, static_model, batch, objective_cfg=HEATMAP_OBJECTIVE
-        )
+        _ = train.loss_and_aux(diff_model, static_model, batch, obj=HEATMAP_OBJ)
 
 
 def test_loss_and_aux_heatmap_checks_cfg_heatmap_size_matches_batch():
@@ -718,12 +724,11 @@ def test_loss_and_aux_heatmap_checks_cfg_heatmap_size_matches_batch():
         "t_orig_from_aug": jnp.eye(3, dtype=jnp.float32)[None, :, :],
         "oob_points_frac": jnp.array([0.0], dtype=jnp.float32),
     }
-    heatmap_cfg = train.ObjectiveConfig(kind="heatmap", heatmap_size=32, sigma=2.0)
+    heatmap_cfg = btx.objectives.Heatmap(heatmap_size=32, sigma=2.0)
+    obj = heatmap_cfg.get_obj()
 
     with np.testing.assert_raises_regex(AssertionError, "heatmap_size"):
-        _ = train.loss_and_aux(
-            diff_model, static_model, batch, objective_cfg=heatmap_cfg
-        )
+        _ = train.loss_and_aux(diff_model, static_model, batch, obj=obj)
 
 
 def test_get_trainable_filter_spec_freezes_vit_for_head_models():
