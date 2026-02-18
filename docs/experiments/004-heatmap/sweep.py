@@ -1,13 +1,16 @@
 """Twelve-run sweep for experiment 004 (heatmap regression).
 
 Run with:
-    uv run launch.py --sweep docs/experiments/004-heatmap/sweep.py model:heatmap
+    uv run launch.py --sweep docs/experiments/004-heatmap/sweep.py
 
 Notes:
 1. This script encodes the `(sigma, learning_rate)` grid from the spec.
 """
 
 import pathlib
+
+import btx.modeling.heatmap
+import btx.objectives
 
 HAWAII_HF_ROOT = pathlib.Path("/fs/ess/PAS2136/samuelstevens/datasets/hawaii-beetles")
 HAWAII_ANN_FPATH = pathlib.Path("data/hawaii-formatted/annotations.json")
@@ -38,25 +41,9 @@ def _make_run(*, sigma: float, lr: float, run_i: int) -> dict:
         "learning_rate": lr,
         "n_steps": 100_000,
         "n_hours": 12.0,
-        "tags": [
-            "exp-004-heatmap",
-            f"sigma-{sigma:g}",
-            f"lr-{lr:g}",
-        ],
-        "objective": {
-            "kind": "heatmap",
-            "heatmap_size": 64,
-            "sigma": sigma,
-            "heatmap_loss": "ce",
-        },
-        "model": {
-            "dinov3_ckpt": DINO_CKPT_FPATH,
-            "heatmap_size": 64,
-            "out_channels": 4,
-            "deconv1_channels": 256,
-            "deconv2_channels": 128,
-            "groupnorm_groups": 32,
-        },
+        "tags": ["exp-004-heatmap", "ce-fix"],
+        "objective": btx.objectives.Heatmap(heatmap_size=64, sigma=sigma),
+        "model": btx.modeling.heatmap.Heatmap(dinov3_ckpt=DINO_CKPT_FPATH),
         "hawaii": {
             "hf_root": HAWAII_HF_ROOT,
             "annotations": HAWAII_ANN_FPATH,
@@ -68,9 +55,9 @@ def _make_run(*, sigma: float, lr: float, run_i: int) -> dict:
             "include_polylines": False,
         },
         "biorepo": {"root": BIOREPO_ROOT, "annotations": BIOREPO_ANN_FPATH},
-        "aug_hawaii": {"go": True, "normalize": True, "crop": True},
-        "aug_beetlepalooza": {"go": True, "normalize": True, "crop": True},
-        "aug_biorepo": {"go": True, "normalize": True, "crop": True},
+        "aug_hawaii": {"go": True, "normalize": True, "crop": False},
+        "aug_beetlepalooza": {"go": True, "normalize": True, "crop": False},
+        "aug_biorepo": {"go": True, "normalize": True, "crop": False},
         "slurm_acct": "PAS2136",
         "slurm_partition": "nextgen",
     }

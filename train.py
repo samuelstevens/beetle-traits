@@ -20,9 +20,9 @@ from jaxtyping import Array, Float, Int, PyTree, jaxtyped
 from PIL import Image, ImageDraw
 
 import btx.data
-import btx.heatmap
 import btx.metrics
 import btx.modeling
+import btx.objectives
 
 log_format = "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
 logging.basicConfig(level=logging.INFO, format=log_format)
@@ -85,35 +85,6 @@ class ValRunSpec:
 
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
-class ObjectiveConfig:
-    """Training objective and target-parameterization settings."""
-
-    kind: tp.Literal["coords", "heatmap"] = "coords"
-    """Objective family: direct coordinate regression or heatmap regression."""
-    heatmap_size: int = 64
-    """Heatmap side length used only when `kind='heatmap'`."""
-    sigma: float = 2.0
-    """Gaussian sigma in heatmap pixels used only when `kind='heatmap'`."""
-    heatmap_loss: tp.Literal["mse", "ce"] = "ce"
-    """Heatmap loss when `kind='heatmap'`: `mse` for pixel regression, `ce` for distribution matching."""
-    eps: float = 1e-8
-    """Small positive constant for safe normalizations."""
-
-    def __post_init__(self):
-        msg = f"Expected objective kind in {{'coords', 'heatmap'}}, got {self.kind}"
-        assert self.kind in {"coords", "heatmap"}, msg
-        msg = f"Expected positive heatmap_size, got {self.heatmap_size}"
-        assert self.heatmap_size > 0, msg
-        msg = f"Expected positive sigma, got {self.sigma}"
-        assert self.sigma > 0.0, msg
-        msg = f"Expected heatmap_loss in {{'mse', 'ce'}}, got {self.heatmap_loss}"
-        assert self.heatmap_loss in {"mse", "ce"}, msg
-        msg = f"Expected positive eps, got {self.eps}"
-        assert self.eps > 0.0, msg
-
-
-@beartype.beartype
-@dataclasses.dataclass(frozen=True)
 class Config:
     seed: int = 17
     """Random seed."""
@@ -141,7 +112,7 @@ class Config:
     """Augmentation config for Beetlepalooza data."""
     aug_biorepo: btx.data.AugmentConfig = btx.data.AugmentConfig()
     """Augmentation config for BioRepo data."""
-    objective: ObjectiveConfig = ObjectiveConfig()
+    objective: btx.objectives.Config = btx.objectives.Coords()
     """Training objective configuration."""
     batch_size: int = 256
     """Batch size."""
@@ -249,14 +220,15 @@ def make_dataloader(
 
 
 @jaxtyped(typechecker=beartype.beartype)
-class Aux(eqx.Module):
-    """Training/validation auxiliary outputs grouped by role and measurement space.
+class TrainAux(eqx.Module):
+    """Training/validation outputs that combine objective and geometry metrics.
 
     Groups:
-    1) `preds` and `loss` for optimization and visualization.
+    1) Core objective outputs (`preds`, `loss`, `sample_loss`) in augmented-image space.
     2) `sample_loss` is per-sample masked objective loss in augmented-image space.
     3) Error tensors split by geometry: `point_*` are endpoint distances, `line_*` are absolute line-length errors (both in centimeters).
     4) Optional per-trait summaries (`width_*`, `length_*`) and batch-level data-quality metric (`oob_points_frac`).
+    5) `obj_metrics` stores objective-specific per-sample diagnostics keyed by metric name.
     """
 
     # Core optimization/prediction outputs.
@@ -288,12 +260,8 @@ class Aux(eqx.Module):
     # Batch-level data quality.
     oob_points_frac: Float[Array, ""]
     """Batch-mean fraction of out-of-bounds target points after augmentation."""
-    heatmap_max_logit: Float[Array, " batch channels"]
-    """Per-sample per-channel max heatmap logit. NaN for coordinate objective."""
-    heatmap_entropy: Float[Array, " batch channels"]
-    """Per-sample per-channel spatial softmax entropy. NaN for coordinate objective."""
-    heatmap_near_uniform: Float[Array, " batch channels"]
-    """Per-sample per-channel near-uniform indicator in [0, 1]. NaN for coordinate objective."""
+    obj_metrics: dict[str, Float[Array, " batch"]]
+    """Objective-specific per-sample metric arrays keyed by metric name."""
 
     def metrics(self) -> dict:
         metrics = {
@@ -306,12 +274,7 @@ class Aux(eqx.Module):
             "length_line_err_cm": self.length_line_err_cm,
             "oob_points_frac": self.oob_points_frac,
         }
-        for i, channel_name in enumerate(btx.heatmap.CHANNEL_NAMES):
-            metrics[f"heatmap_max_logit_{channel_name}"] = self.heatmap_max_logit[:, i]
-            metrics[f"heatmap_entropy_{channel_name}"] = self.heatmap_entropy[:, i]
-            metrics[f"heatmap_near_uniform_frac_{channel_name}"] = (
-                self.heatmap_near_uniform[:, i]
-            )
+        metrics |= self.obj_metrics
         return metrics
 
 
@@ -322,8 +285,8 @@ def loss_and_aux(
     static_model: eqx.Module,
     batch: dict[str, Array],
     *,
-    objective_cfg: ObjectiveConfig,
-) -> tuple[Float[Array, ""], Aux]:
+    obj: btx.objectives.Obj,
+) -> tuple[Float[Array, ""], TrainAux]:
     required_keys = [
         "img",
         "tgt",
@@ -350,118 +313,12 @@ def loss_and_aux(
     msg = f"Expected tgt shape [batch, 2, 2, 2], got {batch['tgt'].shape}"
     assert batch["tgt"].shape[1:] == (2, 2, 2), msg
 
-    # 2) Optimization loss path: coordinate MSE or heatmap MSE/CE depending on objective config.
-    if objective_cfg.kind == "heatmap":
-        n_channels = len(btx.heatmap.CHANNEL_NAMES)
-        msg = "Expected no precomputed heatmap targets in batch for heatmap objective."
-        assert "heatmap_tgt" not in batch, msg
-        msg = (
-            f"Expected heatmap predictions with shape [batch, {n_channels}, H, W], got "
-            f"{preds_raw.shape}"
-        )
-        assert preds_raw.ndim == 4 and preds_raw.shape[1] == n_channels, msg
-
-        _, h_img, w_img, _ = batch["img"].shape
-        msg = f"Expected square input images, got {batch['img'].shape}"
-        assert h_img == w_img, msg
-
-        _, _, h_hm, w_hm = preds_raw.shape
-        msg = f"Expected square heatmaps, got {preds_raw.shape}"
-        assert h_hm == w_hm, msg
-        msg = (
-            "Expected heatmap_size from cfg to match batch heatmaps, got "
-            f"cfg.heatmap_size={objective_cfg.heatmap_size} and batch={h_hm}"
-        )
-        assert h_hm == objective_cfg.heatmap_size, msg
-        msg = (
-            "Expected image_size to be divisible by heatmap_size, got "
-            f"image_size={h_img}, heatmap_size={objective_cfg.heatmap_size}"
-        )
-        assert h_img % objective_cfg.heatmap_size == 0, msg
-
-        heatmap_cfg = btx.heatmap.Config(
-            image_size=h_img,
-            heatmap_size=objective_cfg.heatmap_size,
-            sigma=objective_cfg.sigma,
-            eps=objective_cfg.eps,
-        )
-        heatmap_tgt = jax.vmap(
-            lambda points_l22: btx.heatmap.make_targets(points_l22, cfg=heatmap_cfg)
-        )(batch["tgt"])
-        msg = (
-            "Expected generated heatmap targets shape to match predictions, got "
-            f"{heatmap_tgt.shape} and {preds_raw.shape}"
-        )
-        assert heatmap_tgt.shape == preds_raw.shape, msg
-        if objective_cfg.heatmap_loss == "mse":
-            sample_loss_raw = jax.vmap(
-                lambda pred_chw, tgt_chw, mask_l: btx.heatmap.heatmap_loss(
-                    pred_chw,
-                    tgt_chw,
-                    mask_l,
-                    cfg=heatmap_cfg,
-                )
-            )(preds_raw, heatmap_tgt, mask_line)
-            sample_active_values = jnp.sum(mask_line, axis=1) * (2.0 * h_hm * w_hm)
-        else:
-            msg = f"Expected heatmap_loss in {{'mse', 'ce'}}, got {objective_cfg.heatmap_loss}"
-            assert objective_cfg.heatmap_loss == "ce", msg
-            sample_loss_raw = jax.vmap(
-                lambda pred_chw, tgt_chw, mask_l: btx.heatmap.heatmap_ce_loss(
-                    pred_chw,
-                    tgt_chw,
-                    mask_l,
-                    cfg=heatmap_cfg,
-                )
-            )(preds_raw, heatmap_tgt, mask_line)
-            sample_active_values = jnp.sum(mask_line, axis=1)
-        total_active = jnp.sum(sample_active_values)
-        mse = jnp.where(
-            total_active > 0.0,
-            jnp.sum(sample_loss_raw * sample_active_values) / total_active,
-            jnp.array(0.0, dtype=preds_raw.dtype),
-        )
-        sample_loss = jnp.where(sample_active_values > 0.0, sample_loss_raw, jnp.nan)
-        preds = jax.vmap(
-            lambda pred_chw: btx.heatmap.heatmaps_to_coords(pred_chw, cfg=heatmap_cfg)
-        )(preds_raw)
-        heatmap_max_logit, heatmap_entropy, heatmap_near_uniform = (
-            btx.heatmap.get_diagnostics(preds_raw, cfg=heatmap_cfg)
-        )
-    else:
-        msg = f"Expected objective kind 'coords', got {objective_cfg.kind}"
-        assert objective_cfg.kind == "coords", msg
-        msg = (
-            "Expected coordinate predictions with shape [batch, 2, 2, 2], got "
-            f"{preds_raw.shape}"
-        )
-        assert preds_raw.shape[1:] == (2, 2, 2), msg
-        preds = preds_raw
-
-        squared_error = (preds - batch["tgt"]) ** 2
-        mask = einops.rearrange(mask_line, "b l -> b l () ()")
-        masked_error = squared_error * mask
-        # Each active line contributes 2 points x 2 coordinates = 4 scalar values.
-        active_values = jnp.sum(mask) * 4
-        active_values_safe = jnp.maximum(active_values, 1.0)
-        mse = jnp.sum(masked_error) / active_values_safe
-
-        # Per-sample masked loss for validation bookkeeping (e.g., seen vs unseen species).
-        sample_active_values = jnp.sum(mask, axis=(1, 2, 3)) * 4
-        sample_loss = jnp.where(
-            sample_active_values > 0,
-            jnp.sum(masked_error, axis=(1, 2, 3)) / sample_active_values,
-            jnp.nan,
-        )
-        n_batch = mask_line.shape[0]
-        n_channels = len(btx.heatmap.CHANNEL_NAMES)
-        nan_diag = jnp.full((n_batch, n_channels), jnp.nan, dtype=preds_raw.dtype)
-        heatmap_max_logit = nan_diag
-        heatmap_entropy = nan_diag
-        heatmap_near_uniform = nan_diag
+    # 2) Objective-specific loss path via polymorphic objective implementation.
+    obj_aux = obj.get_loss_aux(preds_raw=preds_raw, batch=batch, mask_line=mask_line)
+    obj_metrics = {f"{obj.key}/{k}": v for k, v in obj_aux.metrics.items()}
 
     # 3) Move predictions back to original-image coordinates and resolve endpoint ordering.
-    preds_orig = btx.metrics.apply_affine(batch["t_orig_from_aug"], preds)
+    preds_orig = btx.metrics.apply_affine(batch["t_orig_from_aug"], obj_aux.preds)
     tgts_orig = btx.metrics.choose_endpoint_matching(preds_orig, batch["points_px"])
 
     # 4) Compute physical errors in centimeters.
@@ -494,10 +351,10 @@ def loss_and_aux(
     oob_points_frac = jnp.nanmean(batch["oob_points_frac"])
 
     # 7) Package all logging/analysis outputs.
-    aux = Aux(
-        mse,
-        preds,
-        sample_loss,
+    return obj_aux.loss, TrainAux(
+        obj_aux.loss,
+        obj_aux.preds,
+        obj_aux.sample_loss,
         point_err_cm,
         line_err_cm,
         width_point_err_cm,
@@ -505,11 +362,8 @@ def loss_and_aux(
         width_line_err_cm,
         length_line_err_cm,
         oob_points_frac,
-        heatmap_max_logit,
-        heatmap_entropy,
-        heatmap_near_uniform,
+        obj_metrics,
     )
-    return mse, aux
 
 
 @eqx.filter_jit()
@@ -521,17 +375,12 @@ def step_model(
     batch: dict[str, Array],
     filter_spec: PyTree[bool],
     *,
-    objective_cfg: ObjectiveConfig,
-) -> tuple[eqx.Module, tp.Any, Aux]:
+    obj: btx.objectives.Obj,
+) -> tuple[eqx.Module, tp.Any, TrainAux]:
     diff_model, static_model = eqx.partition(model, filter_spec)
 
     loss_fn = eqx.filter_value_and_grad(loss_and_aux, has_aux=True)
-    (loss, aux), grads = loss_fn(
-        diff_model,
-        static_model,
-        batch,
-        objective_cfg=objective_cfg,
-    )
+    (loss, aux), grads = loss_fn(diff_model, static_model, batch, obj=obj)
 
     updates, new_state = optim.update(grads, state, diff_model)
     diff_model = eqx.apply_updates(diff_model, updates)
@@ -622,7 +471,12 @@ def plot_preds(
 
 @jaxtyped(typechecker=beartype.beartype)
 def validate(
-    cfg: Config, model: eqx.Module, filter_spec: PyTree[bool], spec: ValRunSpec
+    cfg: Config,
+    model: eqx.Module,
+    filter_spec: PyTree[bool],
+    spec: ValRunSpec,
+    *,
+    obj: btx.objectives.Obj,
 ) -> dict[str, float | wandb.Image]:
     """Run validation on one dataset loader and return scalar metrics and image artifacts.
 
@@ -661,7 +515,7 @@ def validate(
             diff_model,
             static_model,
             batch,
-            objective_cfg=cfg.objective,
+            obj=obj,
         )
         metrics.append(aux.metrics())
 
@@ -687,17 +541,13 @@ def validate(
         for batch_idx, sample_idx in zip(fixed_batch_idxs, fixed_sample_batch_idxs):
             if i == batch_idx and sample_idx < actual_batch_size:
                 beetle_id, img = plot_preds(batch, metadata, aux.preds, int(sample_idx))
-                images[f"images/{spec.prefix}/fixed/beetle{beetle_id}"] = wandb.Image(
-                    img
-                )
+                images[f"images/fixed/beetle{beetle_id}"] = wandb.Image(img)
 
         # check to print any of the random images
         for batch_idx, sample_idx in zip(random_batch_idxs, random_sample_batch_idxs):
             if i == batch_idx and sample_idx < actual_batch_size:
                 beetle_id, img = plot_preds(batch, metadata, aux.preds, int(sample_idx))
-                images[f"images/{spec.prefix}/random/beetle{beetle_id}"] = wandb.Image(
-                    img
-                )
+                images[f"images/random/beetle{beetle_id}"] = wandb.Image(img)
 
         # track worst predictions by line_err_cm using a min-heap for efficiency
         # Extract only the data needed for plotting to avoid keeping entire batch arrays in memory
@@ -727,17 +577,15 @@ def validate(
     # plot worst predictions
     for err, sample_batch, sample_metadata, sample_preds in worst_candidates:
         beetle_id, img = plot_preds(sample_batch, sample_metadata, sample_preds, 0)
-        images[f"images/{spec.prefix}/worst/beetle{beetle_id}"] = wandb.Image(img)
+        images[f"images/worst/beetle{beetle_id}"] = wandb.Image(img)
 
     metrics = {
         k: jnp.concatenate([dct[k].reshape(-1) for dct in metrics]) for k in metrics[0]
     }
 
-    means = {f"{spec.prefix}/{k}": jnp.nanmean(v).item() for k, v in metrics.items()}
-    maxes = {f"{spec.prefix}/max_{k}": jnp.nanmax(v).item() for k, v in metrics.items()}
-    medians = {
-        f"{spec.prefix}/median_{k}": jnp.nanmedian(v).item() for k, v in metrics.items()
-    }
+    means = {k: jnp.nanmean(v).item() for k, v in metrics.items()}
+    maxes = {f"max_{k}": jnp.nanmax(v).item() for k, v in metrics.items()}
+    medians = {f"median_{k}": jnp.nanmedian(v).item() for k, v in metrics.items()}
 
     # Compute seen vs unseen species metrics
     seen_unseen_metrics = {}
@@ -752,16 +600,10 @@ def validate(
         }
 
         for key in ["line_err_cm", "point_err_cm", "loss"]:
-            seen_unseen_metrics[f"{spec.prefix}/seen_{key}"] = jnp.nanmean(
-                all_seen[key]
-            ).item()
-            seen_unseen_metrics[f"{spec.prefix}/unseen_{key}"] = jnp.nanmean(
-                all_unseen[key]
-            ).item()
-            seen_unseen_metrics[f"{spec.prefix}/seen_max_{key}"] = jnp.nanmax(
-                all_seen[key]
-            ).item()
-            seen_unseen_metrics[f"{spec.prefix}/unseen_max_{key}"] = jnp.nanmax(
+            seen_unseen_metrics[f"seen_{key}"] = jnp.nanmean(all_seen[key]).item()
+            seen_unseen_metrics[f"unseen_{key}"] = jnp.nanmean(all_unseen[key]).item()
+            seen_unseen_metrics[f"seen_max_{key}"] = jnp.nanmax(all_seen[key]).item()
+            seen_unseen_metrics[f"unseen_max_{key}"] = jnp.nanmax(
                 all_unseen[key]
             ).item()
 
@@ -872,6 +714,8 @@ def train(cfg: Config):
     diff_model, _ = eqx.partition(model, filter_spec)
     optim = optax.adamw(learning_rate=cfg.learning_rate)
     state = optim.init(diff_model)
+    obj_cfg = cfg.objective
+    obj = obj_cfg.get_obj()
 
     run = wandb.init(
         project=cfg.wandb_project,
@@ -890,7 +734,7 @@ def train(cfg: Config):
             state,
             batch,
             filter_spec,
-            objective_cfg=cfg.objective,
+            obj=obj,
         )
 
         if step % cfg.save_every == 0:
@@ -917,7 +761,12 @@ def train(cfg: Config):
         if step % cfg.val.every == 0:
             val_metrics = {}
             for run_spec in val_run_specs:
-                val_metrics.update(validate(cfg, model, filter_spec, run_spec))
+                run_metrics = validate(cfg, model, filter_spec, run_spec, obj=obj)
+                run_metrics = {
+                    f"{run_spec.prefix}/{key}": value
+                    for key, value in run_metrics.items()
+                }
+                val_metrics.update(run_metrics)
 
             run.log(val_metrics, step=step)
             logger.info("Validation: %d %s", step, val_metrics)

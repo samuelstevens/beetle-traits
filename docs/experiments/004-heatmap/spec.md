@@ -175,6 +175,12 @@ New model file `src/btx/modeling/heatmap.py`:
 
 `docs/experiments/004-heatmap/sweep.py`: generates 12 run configs.
 
+### Implementation note (current + follow-up)
+
+- Current implementation path for this experiment generates Gaussian targets in CPU data transforms (`GaussianHeatmap` in `src/btx/data/transforms.py`).
+- Follow-up plan: move Gaussian target generation to on-device JAX in the training loss path (from `batch["tgt"]`) for better throughput and cleaner objective ownership.
+- For now, run the sweep with the CPU-target path, then compare throughput and metric parity against a later GPU-target implementation.
+
 ## Metric Definitions
 
 Same as exp 002. All physical metrics computed in original image space after affine back-mapping.
