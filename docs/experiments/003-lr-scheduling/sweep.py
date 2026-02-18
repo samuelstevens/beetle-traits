@@ -49,7 +49,7 @@ def _make_run(
         "seed": seed,
         "learning_rate": lr,
         "schedule": schedule,
-        "n_steps": 30_000,
+        "n_steps": 74_000,
         "warmup_steps": warmup_steps,
         "decay_steps": decay_steps,
         "tags": [
@@ -72,6 +72,10 @@ def _make_run(
             "annotations": BIOREP_ANN_FPATH,
         },
 
+        "val_every": 2000,
+        "save_every": 1000,
+
+
         "augment": dict(aug_cfg),
         "aug_hawaii": dict(aug_cfg),
         "aug_beetlepalooza": dict(aug_cfg),
@@ -81,22 +85,27 @@ def _make_run(
 
 def make_cfgs() -> list[dict]:
     cfgs: list[dict] = []
-
-    seed_lr_specs = [
-        (42, 3e-3),
-        (87, 3e-2),
+    lr_specs = [
+        1e-3,
+        3e-3,
+        1e-2,
+        3e-2,
+        1e-1
     ]
 
     schedule_configs = [
-        #cosine: 1.5k warmup with decay till 30k steps
-        ("cosine", 1_500, 30_000, "cosine"),
-        # WSD: 1.5k warmup 3k decay
-        ("wsd", 1_500, 3_000, "wsd"),
+        #cosine: 1.5k warmup with decay till 74_000 steps
+        ("cosine", 3_700, 70_300, "cosine"),
+        # WSD: 3.7k warmup no decay
+        ("wsd", 3_700, 0, "wsd-no-decay"),
+        # WSD: 3.7k warmup, 7_400 decay steps
+        ("wsd", 3_700, 7_400, "wsd"),
+        ("none", 0, 0, "none")
     ]
 
     # Generate all combinations
-    for seed, lr in seed_lr_specs:
+    for lr in lr_specs:
         for schedule, warmup, decay, tag in schedule_configs:
-            cfgs.append(_make_run(seed, lr, schedule, warmup, decay, tag))
+            cfgs.append(_make_run(17, lr, schedule, warmup, decay, tag))
 
     return cfgs

@@ -733,6 +733,7 @@ def train(cfg: Config):
     # Optimize only the differentiable part of the model.
     diff_model, _ = eqx.partition(model, filter_spec)
 
+
     state = optim.init(diff_model)
     obj_cfg = cfg.objective
     obj = obj_cfg.get_obj()
