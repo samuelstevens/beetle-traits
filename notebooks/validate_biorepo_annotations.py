@@ -1,17 +1,19 @@
 import marimo
 
-__generated_with = "0.18.1"
+__generated_with = "0.19.6"
 app = marimo.App(width="medium")
 
 
 @app.cell
 def _():
-    import marimo as mo
     import json
-    import numpy as np
-    import matplotlib.pyplot as plt
     from pathlib import Path
+
+    import marimo as mo
+    import matplotlib.pyplot as plt
+    import numpy as np
     from PIL import Image
+
     return Image, Path, json, mo, np, plt
 
 
@@ -65,7 +67,7 @@ def _(mo, unique_images):
     image_dropdown = mo.ui.dropdown(
         options={img: img for img in unique_images},
         value=unique_images[0] if unique_images else None,
-        label="Select Group Image"
+        label="Select Group Image",
     )
     image_dropdown
     return (image_dropdown,)
@@ -76,12 +78,14 @@ def _(annotations_by_image, image_dropdown, mo):
     # Create dropdown for selecting beetle based on selected image
     selected_image = image_dropdown.value
     beetles_in_image = annotations_by_image.get(selected_image, [])
-    beetle_options = {f"Beetle {b['beetle_position']}": b['beetle_position'] for b in beetles_in_image}
+    beetle_options = {
+        f"Beetle {b['beetle_position']}": b["beetle_position"] for b in beetles_in_image
+    }
 
     beetle_dropdown = mo.ui.dropdown(
         options=beetle_options,
         value=list(beetle_options.keys())[0] if beetle_options else None,
-        label="Select Beetle"
+        label="Select Beetle",
     )
     beetle_dropdown
     return (beetle_dropdown,)
@@ -103,12 +107,14 @@ def _(annotations_by_image, beetle_dropdown, image_dropdown):
         print(f"Selected: {selected_img}, Beetle {selected_beetle_num}")
         print(f"Scientific name: {selected_annotation.get('scientific_name', 'N/A')}")
         print(f"Taxon ID: {selected_annotation.get('taxon_id', 'N/A')}")
-        print(f"Offset: ({selected_annotation['offset_x']:.1f}, {selected_annotation['offset_y']:.1f})")
+        print(
+            f"Offset: ({selected_annotation['offset_x']:.1f}, {selected_annotation['offset_y']:.1f})"
+        )
     return (selected_annotation,)
 
 
-@app.cell
-def _(Image, biorepo_dir, mo, np, plt, selected_annotation):
+app._unparsable_cell(
+    r"""
     if selected_annotation is None:
         # No annotation selected; skip visualization to avoid errors.
         return
@@ -130,17 +136,32 @@ def _(Image, biorepo_dir, mo, np, plt, selected_annotation):
         if individual_img_path.exists():
             indiv_img_pil = Image.open(individual_img_path)
             w, h = indiv_img_pil.size
-            rect = plt.Rectangle((offset_x, offset_y), w, h, fill=False,
-                                 edgecolor="cyan", linewidth=2, linestyle="--")
+            rect = plt.Rectangle(
+                (offset_x, offset_y),
+                w,
+                h,
+                fill=False,
+                edgecolor="cyan",
+                linewidth=2,
+                linestyle="--",
+            )
             axes[0].add_patch(rect)
 
-        axes[0].set_title(f"Group Image: {selected_annotation['group_img']}\n"
-                        f"Beetle {selected_annotation['beetle_position']} location",
-                        fontsize=12)
+        axes[0].set_title(
+            f"Group Image: {selected_annotation['group_img']}\n"
+            f"Beetle {selected_annotation['beetle_position']} location",
+            fontsize=12,
+        )
         axes[0].axis("off")
     else:
-        axes[0].text(0.5, 0.5, f"Group image not found:\n{group_img_path}",
-                    ha="center", va="center", transform=axes[0].transAxes)
+        axes[0].text(
+            0.5,
+            0.5,
+            f"Group image not found:\n{group_img_path}",
+            ha="center",
+            va="center",
+            transform=axes[0].transAxes,
+        )
         axes[0].axis("off")
 
     # Right panel: Individual beetle image with annotations
@@ -149,7 +170,12 @@ def _(Image, biorepo_dir, mo, np, plt, selected_annotation):
         axes[1].imshow(indiv_img)
 
         # Draw measurements on individual image (coordinates are now relative to individual image)
-        colors = {"elytra_length": "red", "elytra_width": "blue", "pronotum_width": "green", "scalebar": "yellow"}
+        colors = {
+            "elytra_length": "red",
+            "elytra_width": "blue",
+            "pronotum_width": "green",
+            "scalebar": "yellow",
+        }
         labels_added = set()
 
         for measurement in selected_annotation["measurements"]:
@@ -163,22 +189,40 @@ def _(Image, biorepo_dir, mo, np, plt, selected_annotation):
                 label = mtype if mtype not in labels_added else None
                 labels_added.add(mtype)
 
-                axes[1].plot(xs, ys, color=colors.get(mtype, "white"), marker="o",
-                            markersize=6, linewidth=2, label=label, markeredgecolor="white")
+                axes[1].plot(
+                    xs,
+                    ys,
+                    color=colors.get(mtype, "white"),
+                    marker="o",
+                    markersize=6,
+                    linewidth=2,
+                    label=label,
+                    markeredgecolor="white",
+                )
 
         axes[1].legend(loc="upper right")
-        axes[1].set_title(f"Individual: {individual_img_path.name}\n"
-                        f"{selected_annotation.get('scientific_name', 'N/A')}",
-                        fontsize=12)
+        axes[1].set_title(
+            f"Individual: {individual_img_path.name}\n"
+            f"{selected_annotation.get('scientific_name', 'N/A')}",
+            fontsize=12,
+        )
         axes[1].axis("off")
     else:
-        axes[1].text(0.5, 0.5, f"Individual image not found:\n{individual_img_path}",
-                    ha="center", va="center", transform=axes[1].transAxes)
+        axes[1].text(
+            0.5,
+            0.5,
+            f"Individual image not found:\n{individual_img_path}",
+            ha="center",
+            va="center",
+            transform=axes[1].transAxes,
+        )
         axes[1].axis("off")
 
     plt.tight_layout()
     mo.output.replace(mo.mpl.interactive(fig))
-    return
+    """,
+    name="_",
+)
 
 
 @app.cell
@@ -211,7 +255,7 @@ def _(mo, unique_images):
     group_overview_dropdown = mo.ui.dropdown(
         options={img: img for img in unique_images},
         value=unique_images[0] if unique_images else None,
-        label="Select Group Image for Overview"
+        label="Select Group Image for Overview",
     )
     group_overview_dropdown
     return (group_overview_dropdown,)
@@ -254,7 +298,12 @@ def _(
     ov_ax.imshow(ov_img)
 
     # Colors for different measurement types
-    ov_colors = {"elytra_length": "red", "elytra_width": "blue", "pronotum_width": "green", "scalebar": "yellow"}
+    ov_colors = {
+        "elytra_length": "red",
+        "elytra_width": "blue",
+        "pronotum_width": "green",
+        "scalebar": "yellow",
+    }
 
     # Draw each beetle's annotations (scaled to resized image)
     for ov_ann in ov_beetles:
@@ -271,38 +320,68 @@ def _(
             ov_h_scaled = ov_h * ov_scale
 
             # Draw bounding box
-            ov_rect = plt.Rectangle((ov_offset_x, ov_offset_y), ov_w_scaled, ov_h_scaled, fill=False,
-                                    edgecolor="cyan", linewidth=2, linestyle="--")
+            ov_rect = plt.Rectangle(
+                (ov_offset_x, ov_offset_y),
+                ov_w_scaled,
+                ov_h_scaled,
+                fill=False,
+                edgecolor="cyan",
+                linewidth=2,
+                linestyle="--",
+            )
             ov_ax.add_patch(ov_rect)
 
             # Add beetle number label
-            ov_ax.text(ov_offset_x + ov_w_scaled/2, ov_offset_y - 5, f"#{ov_beetle_pos}",
-                      color="cyan", fontsize=10, ha="center", va="bottom",
-                      fontweight="bold", bbox=dict(boxstyle="round", facecolor="black", alpha=0.7))
+            ov_ax.text(
+                ov_offset_x + ov_w_scaled / 2,
+                ov_offset_y - 5,
+                f"#{ov_beetle_pos}",
+                color="cyan",
+                fontsize=10,
+                ha="center",
+                va="bottom",
+                fontweight="bold",
+                bbox=dict(boxstyle="round", facecolor="black", alpha=0.7),
+            )
 
         # Draw measurements (convert from individual coords back to group coords, then scale)
         for ov_meas in ov_ann["measurements"]:
             ov_mtype = ov_meas["measurement_type"]
             ov_polyline = ov_meas["polyline"]
 
-            if ov_polyline and ov_mtype != "scalebar":  # Skip scalebar as it's already in group coords
+            if (
+                ov_polyline and ov_mtype != "scalebar"
+            ):  # Skip scalebar as it's already in group coords
                 # Convert individual image coords to group image coords, then scale
                 ov_xs = [(pt[0] + ov_ann["offset_x"]) * ov_scale for pt in ov_polyline]
                 ov_ys = [(pt[1] + ov_ann["offset_y"]) * ov_scale for pt in ov_polyline]
 
-                ov_ax.plot(ov_xs, ov_ys, color=ov_colors.get(ov_mtype, "white"), marker="o",
-                          markersize=3, linewidth=1.5, markeredgecolor="white")
+                ov_ax.plot(
+                    ov_xs,
+                    ov_ys,
+                    color=ov_colors.get(ov_mtype, "white"),
+                    marker="o",
+                    markersize=3,
+                    linewidth=1.5,
+                    markeredgecolor="white",
+                )
 
     # Add legend
     ov_legend_elements = [
         Line2D([0], [0], color="red", linewidth=2, marker="o", label="elytra_length"),
         Line2D([0], [0], color="blue", linewidth=2, marker="o", label="elytra_width"),
-        Line2D([0], [0], color="green", linewidth=2, marker="o", label="pronotum_width"),
-        Line2D([0], [0], color="cyan", linewidth=2, linestyle="--", label="beetle bbox"),
+        Line2D(
+            [0], [0], color="green", linewidth=2, marker="o", label="pronotum_width"
+        ),
+        Line2D(
+            [0], [0], color="cyan", linewidth=2, linestyle="--", label="beetle bbox"
+        ),
     ]
     ov_ax.legend(handles=ov_legend_elements, loc="upper right", fontsize=10)
 
-    ov_ax.set_title(f"Group Image: {ov_selected_img}\n{len(ov_beetles)} beetles", fontsize=14)
+    ov_ax.set_title(
+        f"Group Image: {ov_selected_img}\n{len(ov_beetles)} beetles", fontsize=14
+    )
     ov_ax.axis("off")
 
     plt.tight_layout()

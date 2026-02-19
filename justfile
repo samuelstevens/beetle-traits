@@ -11,6 +11,7 @@ lint: fmt
 
 fmt:
     uvx ruff format --preview .
+    uv run marimo check --fix --ignore-scripts notebooks/**/*.py docs/experiments/**/*.py
 
 clean:
     rm -rf .ruff_cache/

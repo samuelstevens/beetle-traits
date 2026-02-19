@@ -630,7 +630,8 @@ def worker_fn(
 def load_trait_df(cfg: Config) -> pl.DataFrame:
     polyline_dtype = pl.List(pl.List(pl.Float64))
     return pl.read_csv(cfg.hf_root / "trait_annotations.csv").with_columns(
-        pl.col("groupImageFilePath")
+        pl
+        .col("groupImageFilePath")
         .str.to_lowercase()
         .str.strip_prefix("group_images/")
         .str.strip_suffix(".png")
@@ -645,12 +646,14 @@ def load_trait_df(cfg: Config) -> pl.DataFrame:
 @beartype.beartype
 def load_img_df(cfg: Config) -> pl.DataFrame:
     return pl.read_csv(cfg.hf_root / "images_metadata.csv").with_columns(
-        pl.col("groupImageFilePath")
+        pl
+        .col("groupImageFilePath")
         .str.to_lowercase()
         .str.strip_prefix("group_images/")
         .str.strip_suffix(".png")
         .alias("GroupImgBasename"),
-        pl.col("individualImageFilePath")
+        pl
+        .col("individualImageFilePath")
         .str.to_lowercase()
         .str.extract(r"specimen_(\d+)", 1)
         .cast(pl.Int64)
@@ -667,7 +670,8 @@ def main(cfg: Config) -> int:
     trait_df = load_trait_df(cfg)
     # Check that there are no duplicate unique keys
     trait_dups = (
-        trait_df.group_by("GroupImgBasename", "BeetlePosition")
+        trait_df
+        .group_by("GroupImgBasename", "BeetlePosition")
         .len()
         .filter(pl.col("len") > 1)
     )
@@ -685,7 +689,8 @@ def main(cfg: Config) -> int:
 
     img_df = load_img_df(cfg)
     img_dups = (
-        img_df.group_by("GroupImgBasename", "BeetlePosition")
+        img_df
+        .group_by("GroupImgBasename", "BeetlePosition")
         .len()
         .filter(pl.col("len") > 1)
     )
@@ -787,7 +792,8 @@ def main(cfg: Config) -> int:
 
     # Get unique group images with their corresponding individual images
     group_to_individuals = (
-        img_df.group_by("groupImageFilePath")
+        img_df
+        .group_by("groupImageFilePath")
         .agg(pl.col("individualImageFilePath").unique())
         .to_dicts()
     )
