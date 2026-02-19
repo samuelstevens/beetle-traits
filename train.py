@@ -88,7 +88,7 @@ class ValRunSpec:
 class Config:
     seed: int = 17
     """Random seed."""
-    model: btx.modeling.Config = btx.modeling.frozen.Frozen()
+    model: btx.modeling.Config = btx.modeling.heatmap.Heatmap()
     """Neural network config."""
     hawaii: btx.data.HawaiiConfig = btx.data.HawaiiConfig()
     """Hawaii data config."""
@@ -112,7 +112,7 @@ class Config:
     """Augmentation config for Beetlepalooza data."""
     aug_biorepo: btx.data.AugmentConfig = btx.data.AugmentConfig()
     """Augmentation config for BioRepo data."""
-    objective: btx.objectives.Config = btx.objectives.Coords()
+    objective: btx.objectives.Config = btx.objectives.Heatmap()
     """Training objective configuration."""
     batch_size: int = 256
     """Batch size."""
