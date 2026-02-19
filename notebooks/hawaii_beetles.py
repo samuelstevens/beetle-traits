@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.15.2"
+__generated_with = "0.19.6"
 app = marimo.App(width="full")
 
 
@@ -44,7 +44,8 @@ def _(pathlib):
 @app.cell
 def _(hf_root, pl):
     trait_df = pl.read_csv(hf_root / "trait_annotations.csv").with_columns(
-        pl.col("groupImageFilePath")
+        pl
+        .col("groupImageFilePath")
         .str.to_lowercase()
         .str.strip_prefix("group_images/")
         .str.strip_suffix(".png")
@@ -64,12 +65,14 @@ def _(hf_root, pl):
 def _(hf_root, pl):
     img_df = (
         pl.read_csv(hf_root / "images_metadata.csv").with_columns(
-            pl.col("groupImageFilePath")
+            pl
+            .col("groupImageFilePath")
             .str.to_lowercase()
             .str.strip_prefix("group_images/")
             .str.strip_suffix(".png")
             .alias("GroupImgBasename"),
-            pl.col("individualImageFilePath")
+            pl
+            .col("individualImageFilePath")
             .str.to_lowercase()
             .str.extract(r"specimen_(\d+)", 1)
             .cast(pl.Int64)
@@ -88,7 +91,8 @@ def _(pl):
     anns_df = pl.read_json(
         "/fs/ess/PAS2136/Hawaii-2025/beetles_intake/BeetlePUUM/Annotations/HawaiiBeetles_Measurements.json"
     ).with_columns(
-        pl.col("toras_path")
+        pl
+        .col("toras_path")
         .str.to_lowercase()
         .str.strip_prefix("/")
         .str.strip_suffix(".jpg")
@@ -170,7 +174,8 @@ def _(Image, ImageDraw, group_rel_path, hf_root, indiv_rel_path, mo):
 @app.cell
 def _(anns_df, img_df, trait_df):
     final_df = (
-        trait_df.join(anns_df, on=["GroupImgBasename", "BeetlePosition"], how="inner")
+        trait_df
+        .join(anns_df, on=["GroupImgBasename", "BeetlePosition"], how="inner")
         .join(img_df, on=["GroupImgBasename", "BeetlePosition"], how="inner")
         .select(
             "groupImageFilePath",
@@ -313,7 +318,8 @@ def _(
 
         # Map (basename, position) -> individual image path and ID
         pos_to_indiv = (
-            trait_df.select("groupImageFilePath", "BeetlePosition", "individualID")
+            trait_df
+            .select("groupImageFilePath", "BeetlePosition", "individualID")
             .unique()
             .join(
                 img_df.select(
@@ -323,7 +329,8 @@ def _(
                 how="left",
             )
             .with_columns(
-                pl.col("groupImageFilePath")
+                pl
+                .col("groupImageFilePath")
                 .str.split("/")
                 .list.last()
                 .str.replace(".png", "")

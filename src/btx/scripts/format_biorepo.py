@@ -784,7 +784,9 @@ def create_measurements_annotations(
             # Scalebar stays in group image coordinates but convert to paired format [[x1,y1], [x2,y2], ...]
             scalebar_json = {
                 "measurement_type": "scalebar",
-                "polyline": offset_polyline(scalebar_row["polyline"].to_list(), 0.0, 0.0),
+                "polyline": offset_polyline(
+                    scalebar_row["polyline"].to_list(), 0.0, 0.0
+                ),
             }
 
             # Build image paths
@@ -814,9 +816,7 @@ def create_measurements_annotations(
             }
             measurements_per_beetle.append(beetle_annotation_json)
 
-    logger.info(
-        "Created %d beetle annotations", len(measurements_per_beetle)
-    )
+    logger.info("Created %d beetle annotations", len(measurements_per_beetle))
 
     return measurements_per_beetle
 

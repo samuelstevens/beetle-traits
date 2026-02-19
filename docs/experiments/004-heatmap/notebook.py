@@ -15,7 +15,6 @@ def _():
     import polars as pl
     import wandb
     from PIL import Image
-
     return Image, mo, np, os, pl, plt, tempfile, wandb
 
 
@@ -134,8 +133,24 @@ def _(heatmap_df, mo, pl, plt):
             if _sub.is_empty():
                 continue
             _lrs = _sub.get_column("learning_rate").to_numpy()
-            _ax.plot(_lrs, _sub.get_column("best").to_numpy(), "o-", color=_color, linewidth=1.8, markersize=6, label=f"best s={_s:g}")
-            _ax.plot(_lrs, _sub.get_column("final").to_numpy(), "o--", color=_color, linewidth=1.2, markersize=4, label=f"final s={_s:g}")
+            _ax.plot(
+                _lrs,
+                _sub.get_column("best").to_numpy(),
+                "o-",
+                color=_color,
+                linewidth=1.8,
+                markersize=6,
+                label=f"best s={_s:g}",
+            )
+            _ax.plot(
+                _lrs,
+                _sub.get_column("final").to_numpy(),
+                "o--",
+                color=_color,
+                linewidth=1.2,
+                markersize=4,
+                label=f"final s={_s:g}",
+            )
 
         _ax.set_xscale("log")
         _ax.set_yscale("log")
@@ -190,8 +205,24 @@ def _(heatmap_df, mo, pl, plt):
             if _sub.is_empty():
                 continue
             _lrs = _sub.get_column("learning_rate").to_numpy()
-            _ax.plot(_lrs, _sub.get_column("best").to_numpy(), "o-", color=_color, linewidth=1.8, markersize=6, label=f"best s={_s:g}")
-            _ax.plot(_lrs, _sub.get_column("final").to_numpy(), "o--", color=_color, linewidth=1.2, markersize=4, label=f"final s={_s:g}")
+            _ax.plot(
+                _lrs,
+                _sub.get_column("best").to_numpy(),
+                "o-",
+                color=_color,
+                linewidth=1.8,
+                markersize=6,
+                label=f"best s={_s:g}",
+            )
+            _ax.plot(
+                _lrs,
+                _sub.get_column("final").to_numpy(),
+                "o--",
+                color=_color,
+                linewidth=1.2,
+                markersize=4,
+                label=f"final s={_s:g}",
+            )
 
         _ax.set_xscale("log")
         _ax.set_yscale("log")
@@ -246,8 +277,24 @@ def _(heatmap_df, mo, pl, plt):
             if _sub.is_empty():
                 continue
             _lrs = _sub.get_column("learning_rate").to_numpy()
-            _ax.plot(_lrs, _sub.get_column("best").to_numpy(), "o-", color=_color, linewidth=1.8, markersize=6, label=f"best s={_s:g}")
-            _ax.plot(_lrs, _sub.get_column("final").to_numpy(), "o--", color=_color, linewidth=1.2, markersize=4, label=f"final s={_s:g}")
+            _ax.plot(
+                _lrs,
+                _sub.get_column("best").to_numpy(),
+                "o-",
+                color=_color,
+                linewidth=1.8,
+                markersize=6,
+                label=f"best s={_s:g}",
+            )
+            _ax.plot(
+                _lrs,
+                _sub.get_column("final").to_numpy(),
+                "o--",
+                color=_color,
+                linewidth=1.2,
+                markersize=4,
+                label=f"final s={_s:g}",
+            )
 
         _ax.set_xscale("log")
         _ax.set_yscale("log")

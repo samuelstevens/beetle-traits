@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.15.2"
+__generated_with = "0.19.6"
 app = marimo.App(width="full")
 
 
@@ -58,10 +58,12 @@ def _(beartype, hf_root, pl):
         # Extract beetle position from the individual image filename
         # e.g., "A00000001831_specimen_1.png" -> 1
         df = df.with_columns(
-            pl.col("groupImageFilePath")
+            pl
+            .col("groupImageFilePath")
             .str.strip_prefix("group_images/")
             .alias("GroupImgBasename"),
-            pl.col("individualImageFilePath")
+            pl
+            .col("individualImageFilePath")
             .str.extract(r"specimen_(\d+)", 1)
             .cast(pl.Int64)
             .alias("BeetlePosition"),
@@ -73,7 +75,8 @@ def _(beartype, hf_root, pl):
 
     # Look for duplicate_species
     assert (
-        specimens_df.group_by("GroupImgBasename", "BeetlePosition")
+        specimens_df
+        .group_by("GroupImgBasename", "BeetlePosition")
         .len()
         .filter(pl.col("len") > 1)
         .is_empty()
@@ -102,7 +105,8 @@ def _(ast, beartype, hf_root, line_dtype, pl):
 
         # Process dataframe
         df = (
-            df.with_columns(
+            df
+            .with_columns(
                 pl.col("pictureID").alias("GroupImgBasename"),
                 pl.col("individual").alias("BeetlePosition"),
                 # Tuples
@@ -152,7 +156,8 @@ def _(
         ).row(index=0)
 
         (indiv_rel_path,) = (
-            specimens_df.filter(pl.col("groupImageFilePath") == group_rel_path)
+            specimens_df
+            .filter(pl.col("groupImageFilePath") == group_rel_path)
             .select("individualImageFilePath")
             .row(index=0)
         )

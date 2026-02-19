@@ -17,7 +17,6 @@ def _():
 
     import btx
     import btx.data.transforms
-
     return Image, btx, copy, grain, mo, np, pathlib, plt
 
 

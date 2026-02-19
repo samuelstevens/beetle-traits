@@ -17,7 +17,6 @@ def _():
     import btx
     import btx.data
     import btx.objectives.heatmap
-
     return Image, btx, copy, jnp, np, pathlib, plt
 
 
@@ -175,7 +174,6 @@ def _(btx, copy, jnp, np):
             markersize=4,
             alpha=alpha,
         )
-
     return (
         decode_argmax,
         get_heatmap_views,
@@ -306,9 +304,9 @@ def _():
 
 @app.cell
 def _(
-    decode_argmax,
     btx,
     dataset_rows,
+    decode_argmax,
     jnp,
     make_heatmap_logits,
     np,
@@ -472,8 +470,8 @@ def _(
 @app.cell
 def _(
     btx,
-    decode_argmax,
     dataset_rows,
+    decode_argmax,
     make_heatmap_logits,
     np,
     plt,

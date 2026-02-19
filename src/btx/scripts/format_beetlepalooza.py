@@ -700,10 +700,12 @@ def load_specimens_df(cfg: Config) -> pl.DataFrame:
     df = pl.read_csv(metadata_path)
 
     return df.with_columns(
-        pl.col("groupImageFilePath")
+        pl
+        .col("groupImageFilePath")
         .str.strip_prefix("group_images/")
         .alias("GroupImgBasename"),
-        pl.col("individualImageFilePath")
+        pl
+        .col("individualImageFilePath")
         .str.extract(r"specimen_(\d+)", 1)
         .cast(pl.Int64)
         .alias("BeetlePosition"),
@@ -721,7 +723,8 @@ def validate_data(
 
     # Check for duplicate specimens
     specimen_dups = (
-        specimens_df.group_by("GroupImgBasename", "BeetlePosition")
+        specimens_df
+        .group_by("GroupImgBasename", "BeetlePosition")
         .len()
         .filter(pl.col("len") > 1)
     )
@@ -800,7 +803,8 @@ def validate_data(
     # Check image dimensions
     logger.info("Checking image dimensions.")
     group_to_individuals = (
-        specimens_df.group_by("groupImageFilePath")
+        specimens_df
+        .group_by("groupImageFilePath")
         .agg(pl.col("individualImageFilePath").unique())
         .to_dicts()
     )
