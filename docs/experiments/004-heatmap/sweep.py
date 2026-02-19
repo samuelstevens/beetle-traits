@@ -1,10 +1,11 @@
-"""Twelve-run sweep for experiment 004 (heatmap regression).
+"""Extended sweep for experiment 004 (heatmap regression).
 
 Run with:
     uv run launch.py --sweep docs/experiments/004-heatmap/sweep.py
 
 Notes:
-1. This script encodes the `(sigma, learning_rate)` grid from the spec.
+1. The original 12-run grid (3 sigmas x 4 LRs) ran as Slurm 3737595.
+2. This file now generates only the NEW extension runs that widen the LR bounds to find degradation, especially for sigma=1 which needs higher LRs.
 """
 
 import pathlib
@@ -26,8 +27,12 @@ DINO_CKPT_FPATH = pathlib.Path(
     "/fs/ess/PAS2136/samuelstevens/models/dinov3-jax/dinov3_vits16.eqx"
 )
 
-SIGMAS = [1.0, 2.0, 3.0]
-LRS = [1e-3, 3e-3, 1e-2, 3e-2]
+ORIGINAL_LRS = {1e-3, 3e-3, 1e-2, 3e-2}
+SIGMA_LRS: dict[float, list[float]] = {
+    1.0: [3e-4, 1e-1, 3e-1, 1.0, 3.0],
+    2.0: [3e-4, 1e-1],
+    3.0: [3e-4, 1e-1],
+}
 
 
 def _get_seed(run_i: int) -> int:
@@ -65,9 +70,10 @@ def _make_run(*, sigma: float, lr: float, run_i: int) -> dict:
 
 def make_cfgs() -> list[dict]:
     cfgs: list[dict] = []
-    run_i = 0
-    for sigma in SIGMAS:
-        for lr in LRS:
+    run_i = 12  # Continue seed numbering after original 12 runs.
+    for sigma, new_lrs in SIGMA_LRS.items():
+        for lr in new_lrs:
+            assert lr not in ORIGINAL_LRS, f"lr={lr} already in original sweep"
             cfgs.append(_make_run(sigma=sigma, lr=lr, run_i=run_i))
             run_i += 1
     return cfgs
