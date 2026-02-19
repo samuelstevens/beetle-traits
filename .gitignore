@@ -6,5 +6,8 @@ data/beetlepalooza-formatted/random-examples/
 logs/
 wandb/
 
+# Testing
 .hypothesis
+.coverage
+
 .env
