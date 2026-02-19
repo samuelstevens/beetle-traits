@@ -135,9 +135,9 @@ def test_get_augment_for_dataset_returns_dataset_specific_configs():
     assert got_biorepo.crop_scale_min == 0.9
 
 
-def test_train_config_defaults_to_coords_objective():
+def test_train_config_defaults_to_heatmap_objective():
     cfg = train.Config()
-    assert isinstance(cfg.objective, btx.objectives.Coords)
+    assert isinstance(cfg.objective, btx.objectives.Heatmap)
 
 
 def test_heatmap_objective_asserts_on_invalid_fields():
