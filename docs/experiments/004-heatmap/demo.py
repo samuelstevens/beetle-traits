@@ -16,7 +16,6 @@ def _():
 
     import btx
     import btx.data
-    import btx.metrics
     import btx.objectives.heatmap
 
     return Image, btx, copy, jnp, np, pathlib, plt
@@ -99,20 +98,42 @@ def _(btx, copy, jnp, np):
         assert np.asarray(sample["tgt"]).shape == (2, 2, 2), msg
         return sample
 
+    def make_heatmap_logits(
+        tgt_l22: np.ndarray, *, sigma: float
+    ) -> tuple[btx.objectives.heatmap.Config, jnp.ndarray, jnp.ndarray]:
+        """Build heatmap config, targets, and stable logits from endpoint coords."""
+        heatmap_cfg = btx.objectives.heatmap.Config(
+            image_size=256, heatmap_size=64, sigma=sigma
+        )
+        tgt_j = jnp.asarray(tgt_l22, dtype=jnp.float32)
+        msg = f"Expected tgt shape (2, 2, 2), got {tgt_j.shape}"
+        assert tgt_j.shape == (2, 2, 2), msg
+        heatmap_tgt = btx.objectives.heatmap.make_targets(tgt_j, cfg=heatmap_cfg)
+        msg = f"Expected heatmap target shape (4, 64, 64), got {heatmap_tgt.shape}"
+        assert heatmap_tgt.shape == (4, 64, 64), msg
+        logits_chw = jnp.log(jnp.maximum(heatmap_tgt, heatmap_cfg.eps))
+        return heatmap_cfg, heatmap_tgt, logits_chw
+
+    def decode_argmax(logits_chw: jnp.ndarray, *, cfg) -> np.ndarray:
+        """Decode endpoint coordinates by hard argmax in heatmap space."""
+        flat_i = jnp.argmax(jnp.reshape(logits_chw, (4, -1)), axis=1)
+        y_i = flat_i // cfg.heatmap_size
+        x_i = flat_i % cfg.heatmap_size
+        points_hm_n2 = jnp.stack(
+            [x_i.astype(jnp.float32), y_i.astype(jnp.float32)],
+            axis=1,
+        )
+        points_img_n2 = btx.objectives.heatmap.heatmap_to_image_udp(
+            points_hm_n2, cfg=cfg
+        )
+        return np.asarray(jnp.reshape(points_img_n2, (2, 2, 2)))
+
     def get_heatmap_views(
         prepped_sample: dict[str, object], *, sigma: float
     ) -> tuple[np.ndarray, np.ndarray]:
         """Generate heatmaps from `tgt` and decode points back to image space."""
-        heatmap_cfg = btx.objectives.heatmap.Config(
-            image_size=256, heatmap_size=64, sigma=sigma
-        )
-        tgt_l22 = jnp.asarray(np.asarray(prepped_sample["tgt"], dtype=np.float32))
-        msg = f"Expected tgt shape (2, 2, 2), got {tgt_l22.shape}"
-        assert tgt_l22.shape == (2, 2, 2), msg
-        heatmap_tgt = btx.objectives.heatmap.make_targets(tgt_l22, cfg=heatmap_cfg)
-        msg = f"Expected heatmap target shape (4, 64, 64), got {heatmap_tgt.shape}"
-        assert heatmap_tgt.shape == (4, 64, 64), msg
-        logits_chw = jnp.log(jnp.maximum(heatmap_tgt, heatmap_cfg.eps))
+        tgt_l22 = np.asarray(prepped_sample["tgt"], dtype=np.float32)
+        heatmap_cfg, heatmap_tgt, logits_chw = make_heatmap_logits(tgt_l22, sigma=sigma)
         pred_l22 = btx.objectives.heatmap.heatmaps_to_coords(
             logits_chw, cfg=heatmap_cfg
         )
@@ -155,7 +176,13 @@ def _(btx, copy, jnp, np):
             alpha=alpha,
         )
 
-    return get_heatmap_views, plot_lines, run_pre_heatmap_pipeline
+    return (
+        decode_argmax,
+        get_heatmap_views,
+        make_heatmap_logits,
+        plot_lines,
+        run_pre_heatmap_pipeline,
+    )
 
 
 @app.cell
@@ -278,7 +305,16 @@ def _():
 
 
 @app.cell
-def _(btx, dataset_rows, jnp, np, plt, run_pre_heatmap_pipeline):
+def _(
+    decode_argmax,
+    btx,
+    dataset_rows,
+    jnp,
+    make_heatmap_logits,
+    np,
+    plt,
+    run_pre_heatmap_pipeline,
+):
     _cmp_sigma_large = 6.0
     _cmp_n_per_dataset = 2
 
@@ -287,18 +323,6 @@ def _(btx, dataset_rows, jnp, np, plt, run_pre_heatmap_pipeline):
         for _cmp_sample in _cmp_samples[:_cmp_n_per_dataset]:
             _cmp_rows.append((_cmp_dataset_name, _cmp_sample))
     assert _cmp_rows, "No samples were available from the configured datasets."
-
-    def _cmp_decode_argmax(_cmp_logits_chw: jnp.ndarray, *, _cmp_cfg) -> np.ndarray:
-        _cmp_flat_i = jnp.argmax(jnp.reshape(_cmp_logits_chw, (4, -1)), axis=1)
-        _cmp_y_i = _cmp_flat_i // _cmp_cfg.heatmap_size
-        _cmp_x_i = _cmp_flat_i % _cmp_cfg.heatmap_size
-        _cmp_points_hm_n2 = jnp.stack(
-            [_cmp_x_i.astype(jnp.float32), _cmp_y_i.astype(jnp.float32)], axis=1
-        )
-        _cmp_points_img_n2 = btx.objectives.heatmap.heatmap_to_image_udp(
-            _cmp_points_hm_n2, cfg=_cmp_cfg
-        )
-        return np.asarray(jnp.reshape(_cmp_points_img_n2, (2, 2, 2)))
 
     _cmp_endpoint_soft_px = []
     _cmp_endpoint_hard_px = []
@@ -310,24 +334,17 @@ def _(btx, dataset_rows, jnp, np, plt, run_pre_heatmap_pipeline):
     for _cmp_dataset_name, _cmp_raw_sample in _cmp_rows:
         _cmp_prepped = run_pre_heatmap_pipeline(_cmp_raw_sample)
         _cmp_tgt_l22 = np.asarray(_cmp_prepped["tgt"], dtype=np.float32)
-        _cmp_heatmap_cfg = btx.objectives.heatmap.Config(
-            image_size=256,
-            heatmap_size=64,
-            sigma=_cmp_sigma_large,
-        )
-        _cmp_tgt_j = jnp.asarray(_cmp_tgt_l22, dtype=jnp.float32)
-        _cmp_heatmap_tgt = btx.objectives.heatmap.make_targets(
-            _cmp_tgt_j, cfg=_cmp_heatmap_cfg
-        )
-        _cmp_logits_chw = jnp.log(jnp.maximum(_cmp_heatmap_tgt, _cmp_heatmap_cfg.eps))
+        (
+            _cmp_heatmap_cfg,
+            _,
+            _cmp_logits_chw,
+        ) = make_heatmap_logits(_cmp_tgt_l22, sigma=_cmp_sigma_large)
         _cmp_pred_soft_l22 = np.asarray(
             btx.objectives.heatmap.heatmaps_to_coords(
                 _cmp_logits_chw, cfg=_cmp_heatmap_cfg
             )
         )
-        _cmp_pred_hard_l22 = _cmp_decode_argmax(
-            _cmp_logits_chw, _cmp_cfg=_cmp_heatmap_cfg
-        )
+        _cmp_pred_hard_l22 = decode_argmax(_cmp_logits_chw, cfg=_cmp_heatmap_cfg)
 
         _cmp_err_soft_l2 = np.linalg.norm(_cmp_pred_soft_l22 - _cmp_tgt_l22, axis=2)
         _cmp_err_hard_l2 = np.linalg.norm(_cmp_pred_hard_l22 - _cmp_tgt_l22, axis=2)
@@ -453,7 +470,15 @@ def _(btx, dataset_rows, jnp, np, plt, run_pre_heatmap_pipeline):
 
 
 @app.cell
-def _(btx, dataset_rows, jnp, np, plt, run_pre_heatmap_pipeline):
+def _(
+    btx,
+    decode_argmax,
+    dataset_rows,
+    make_heatmap_logits,
+    np,
+    plt,
+    run_pre_heatmap_pipeline,
+):
     _viz_sigma_large = 8.0
     _viz_top_k = 4
     _viz_n_candidates_per_dataset = 6
@@ -464,34 +489,18 @@ def _(btx, dataset_rows, jnp, np, plt, run_pre_heatmap_pipeline):
             _viz_rows.append((_viz_dataset_name, _viz_sample))
     assert _viz_rows, "No samples were available from the configured datasets."
 
-    def _viz_decode_argmax(_viz_logits_chw: jnp.ndarray, *, _viz_cfg) -> np.ndarray:
-        _viz_flat_i = jnp.argmax(jnp.reshape(_viz_logits_chw, (4, -1)), axis=1)
-        _viz_y_i = _viz_flat_i // _viz_cfg.heatmap_size
-        _viz_x_i = _viz_flat_i % _viz_cfg.heatmap_size
-        _viz_points_hm_n2 = jnp.stack(
-            [_viz_x_i.astype(jnp.float32), _viz_y_i.astype(jnp.float32)], axis=1
-        )
-        _viz_points_img_n2 = btx.objectives.heatmap.heatmap_to_image_udp(
-            _viz_points_hm_n2, cfg=_viz_cfg
-        )
-        return np.asarray(jnp.reshape(_viz_points_img_n2, (2, 2, 2)))
-
     _viz_records = []
     for _viz_dataset_name, _viz_raw_sample in _viz_rows:
         _viz_prepped = run_pre_heatmap_pipeline(_viz_raw_sample)
         _viz_img = np.asarray(_viz_prepped["img"], dtype=np.float32)
         _viz_tgt = np.asarray(_viz_prepped["tgt"], dtype=np.float32)
-        _viz_cfg = btx.objectives.heatmap.Config(
-            image_size=256, heatmap_size=64, sigma=_viz_sigma_large
+        _viz_cfg, _viz_heatmap_tgt, _viz_logits = make_heatmap_logits(
+            _viz_tgt, sigma=_viz_sigma_large
         )
-        _viz_heatmap_tgt = btx.objectives.heatmap.make_targets(
-            jnp.asarray(_viz_tgt, dtype=jnp.float32), cfg=_viz_cfg
-        )
-        _viz_logits = jnp.log(jnp.maximum(_viz_heatmap_tgt, _viz_cfg.eps))
         _viz_pred_soft = np.asarray(
             btx.objectives.heatmap.heatmaps_to_coords(_viz_logits, cfg=_viz_cfg)
         )
-        _viz_pred_hard = _viz_decode_argmax(_viz_logits, _viz_cfg=_viz_cfg)
+        _viz_pred_hard = decode_argmax(_viz_logits, cfg=_viz_cfg)
         _viz_soft_hard_px = np.linalg.norm(_viz_pred_soft - _viz_pred_hard, axis=2)
         _viz_soft_err_px = np.linalg.norm(_viz_pred_soft - _viz_tgt, axis=2)
         _viz_hard_err_px = np.linalg.norm(_viz_pred_hard - _viz_tgt, axis=2)
