@@ -1,5 +1,8 @@
 # tests/conftest.py
 import os
+import pathlib
+
+import pytest
 
 
 def pytest_addoption(parser):
@@ -21,6 +24,18 @@ def pytest_addoption(parser):
         default=os.getenv("DINOV3_JAX_CKPTS"),
         help="Path to DINOv3 Jax checkpoint directory.",
     )
+
+
+@pytest.fixture
+def dinov3_vits_fpath(request: pytest.FixtureRequest) -> pathlib.Path:
+    """Path to the DINOv3 ViT-S/16 Jax checkpoint, or skip if unavailable."""
+    root = request.config.getoption("--dinov3-jax-ckpts")
+    if not root:
+        pytest.skip("--dinov3-jax-ckpts not set")
+    fpath = pathlib.Path(root) / "dinov3_vits16.eqx"
+    if not fpath.is_file():
+        pytest.skip(f"ViT-S checkpoint not found at {fpath}")
+    return fpath
 
 
 def pytest_generate_tests(metafunc):

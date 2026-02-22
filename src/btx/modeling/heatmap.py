@@ -170,3 +170,37 @@ class Model(eqx.Module):
             self.heatmap_size,
         ), msg
         return logits_chw
+
+    def extract_features(
+        self, x_hwc: Float[Array, "h w c"]
+    ) -> tuple[Float[Array, "channels height width"], Float[Array, " embed_dim"]]:
+        """Forward pass returning both heatmap logits and the CLS embedding.
+
+        Args:
+            x_hwc: Input image tensor in `HWC` format.
+
+        Returns:
+            Tuple of (logits_chw, cls_d) where cls_d is the ViT CLS token.
+        """
+        msg = f"Expected image shape (H, W, 3), got {x_hwc.shape}"
+        assert x_hwc.ndim == 3 and x_hwc.shape[2] == 3, msg
+        h_img, w_img, _ = x_hwc.shape
+        patch_size = self.vit.cfg.patch_size
+        msg = f"Expected image spatial size divisible by patch_size={patch_size}, got ({h_img}, {w_img})"
+        assert h_img % patch_size == 0 and w_img % patch_size == 0, msg
+
+        x_chw = einops.rearrange(x_hwc, "h w c -> c h w")
+        vit_out = self.vit(x_chw)
+        cls_d = vit_out["cls"]
+        patch_nd = vit_out["patches"]
+
+        grid_h = h_img // patch_size
+        grid_w = w_img // patch_size
+        feat_dhw = einops.rearrange(patch_nd, "(h w) d -> d h w", h=grid_h, w=grid_w)
+        x = self.deconv1(feat_dhw)
+        x = jnn.relu(self.gn1(x))
+        x = self.deconv2(x)
+        x = jnn.relu(self.gn2(x))
+        logits_chw = self.out_conv(x)
+
+        return logits_chw, cls_d

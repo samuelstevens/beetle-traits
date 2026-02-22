@@ -9,17 +9,19 @@ from collections.abc import Iterable
 import beartype
 import einops
 import equinox as eqx
-import grain
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
 import polars as pl
+import tyro
 import wandb
 from jaxtyping import Array, Float, Int, PyTree, jaxtyped
 from PIL import Image, ImageDraw
 
+import btx.configs
 import btx.data
+import btx.helpers
 import btx.metrics
 import btx.modeling
 import btx.objectives
@@ -130,6 +132,8 @@ class Config:
     """Total number of training steps."""
     log_to: pathlib.Path = pathlib.Path("./logs")
     learning_rate: float = 3e-4
+    ckpt_fpath: pathlib.Path = pathlib.Path("model.eqx")
+    """Where to save the final model checkpoint."""
 
     wandb_project: str = "beetle-traits"
     slurm_acct: str = ""
@@ -160,63 +164,19 @@ def make_dataloader(
 ):
     """Build a mixed Grain dataloader from one or more dataset sources.
 
-    Args:
-        cfg: Global train config, used to look up per-dataset augmentation configs.
-        dss: Dataset sources to include in this loader (plural of ds).
-        shuffle: Whether to shuffle each source dataset before transforms.
-        finite: Whether the iterator should stop after one epoch (`True`) or repeat forever (`False`).
-        is_train: Whether to build the train transform pipeline (`True`) or eval pipeline (`False`).
-
-    Returns:
-        Grain iterable dataset yielding transformed, batched samples.
+    Thin wrapper around btx.data.make_dataloader that resolves per-dataset augmentation configs from the training config.
     """
-
-    datasets = []
-    weights = []
-
-    for ds in dss:
-        aug_cfg = get_aug_for_dataset(cfg, ds.cfg)
-        source = tp.cast(tp.Sequence[object], ds)
-        mapped_ds = grain.MapDataset.source(source).seed(cfg.seed)
-        if shuffle:
-            mapped_ds = mapped_ds.shuffle()
-
-        for i, tfm in enumerate(
-            btx.data.transforms.make_transforms(aug_cfg, is_train=is_train)
-        ):
-            if isinstance(tfm, grain.transforms.RandomMap):
-                mapped_ds = mapped_ds.random_map(tfm, seed=cfg.seed + i)
-            else:
-                mapped_ds = mapped_ds.map(tfm)
-
-        datasets.append(mapped_ds)
-        weights.append(len(ds))
-
-    assert datasets, "No datasets provided."
-
-    if len(datasets) == 1:
-        mixed = datasets[0]
-    else:
-        total = sum(weights)
-        assert total > 0, "All datasets are empty."
-        mix_weights = [w / total for w in weights]
-        mixed = grain.MapDataset.mix(datasets, weights=mix_weights)
-
-    mixed = mixed.repeat(num_epochs=None if not finite else 1)
-    mixed = mixed.batch(batch_size=cfg.batch_size, drop_remainder=False)
-
-    iter_ds = mixed.to_iter_dataset(
-        read_options=grain.ReadOptions(num_threads=2, prefetch_buffer_size=8)
+    aug_cfgs = [get_aug_for_dataset(cfg, ds.cfg) for ds in dss]
+    return btx.data.make_dataloader(
+        dss,
+        aug_cfgs,
+        seed=cfg.seed,
+        batch_size=cfg.batch_size,
+        n_workers=cfg.n_workers,
+        shuffle=shuffle,
+        finite=finite,
+        is_train=is_train,
     )
-
-    if cfg.n_workers > 0:
-        iter_ds = iter_ds.mp_prefetch(
-            grain.multiprocessing.MultiprocessingOptions(
-                num_workers=cfg.n_workers, per_worker_buffer_size=2
-            )
-        )
-
-    return iter_ds
 
 
 @jaxtyped(typechecker=beartype.beartype)
@@ -510,7 +470,7 @@ def validate(
 
     diff_model, static_model = eqx.partition(model, filter_spec)
     for i, batch in enumerate(spec.dl):
-        batch, metadata = to_device(batch)
+        batch, metadata = btx.helpers.to_device(batch)
         loss, aux = loss_and_aux(
             diff_model,
             static_model,
@@ -646,31 +606,6 @@ def get_training_species(cfg: "Config") -> frozenset[str]:
 
 
 @beartype.beartype
-def is_device_array(x: object) -> bool:
-    if isinstance(x, (jax.Array, np.ndarray)):
-        dt = getattr(x, "dtype", None)
-        if dt is None:
-            return False
-        return (
-            np.issubdtype(dt, np.bool_)
-            or np.issubdtype(dt, np.integer)
-            or np.issubdtype(dt, np.unsignedinteger)
-            or np.issubdtype(dt, np.floating)
-            or np.issubdtype(dt, np.complexfloating)
-        )
-    return False
-
-
-@beartype.beartype
-def to_device(batch: dict[str, object], device=None) -> tuple:
-    numeric = {k: v for k, v in batch.items() if is_device_array(v)}
-    aux = {k: v for k, v in batch.items() if not is_device_array(v)}
-    # device_put works on pytrees; leaves become jax.Arrays on the target device
-    numeric = jax.device_put(numeric, device)
-    return numeric, aux
-
-
-@beartype.beartype
 def train(cfg: Config):
     key = jax.random.key(seed=cfg.seed)
     biorepo_val_cfg = dataclasses.replace(cfg.biorepo, split="val")
@@ -727,7 +662,7 @@ def train(cfg: Config):
 
     # Training
     for step, batch in enumerate(train_dl):
-        batch, metadata = to_device(batch)
+        batch, metadata = btx.helpers.to_device(batch)
         model, state, aux = step_model(
             model,
             optim,
@@ -773,3 +708,69 @@ def train(cfg: Config):
 
         if step >= cfg.n_steps:
             break
+
+    btx.modeling.save_ckpt(model, cfg.model, cfg.objective, cfg.ckpt_fpath)
+    logger.info("Saved checkpoint to '%s'.", cfg.ckpt_fpath)
+
+
+@beartype.beartype
+def main(
+    cfg: tp.Annotated[Config, tyro.conf.arg(name="")],
+    sweep: pathlib.Path | None = None,
+):
+    if sweep is None:
+        cfgs = [cfg]
+    else:
+        sweep_dcts = btx.configs.load_sweep(sweep)
+        if not sweep_dcts:
+            logger.error("No valid sweeps found in '%s'.", sweep)
+            return
+
+        cfgs, errs = btx.configs.load_cfgs(cfg, default=Config(), sweep_dcts=sweep_dcts)
+        if errs:
+            for err in errs:
+                logger.warning("Error in config: %s", err)
+            return
+
+    base = cfgs[0]
+    for c in cfgs[1:]:
+        msg = "Sweep configs must share slurm_acct, slurm_partition, n_hours, n_workers, and log_to."
+        assert c.slurm_acct == base.slurm_acct, msg
+        assert c.slurm_partition == base.slurm_partition, msg
+        assert c.n_hours == base.n_hours, msg
+        assert c.n_workers == base.n_workers, msg
+        assert c.log_to == base.log_to, msg
+
+    if base.slurm_acct:
+        import submitit
+
+        executor = submitit.SlurmExecutor(folder=base.log_to)
+        executor.update_parameters(
+            job_name="beetle-pretrain",
+            time=int(base.n_hours * 60),
+            partition=base.slurm_partition,
+            gpus_per_node=1,
+            ntasks_per_node=1,
+            cpus_per_task=base.n_workers + 4,
+            stderr_to_stdout=True,
+            account=base.slurm_acct,
+        )
+    else:
+        import submitit
+
+        executor = submitit.DebugExecutor(folder=base.log_to)
+
+    with executor.batch():
+        jobs = [executor.submit(train, job_cfg) for job_cfg in cfgs]
+
+    for job in jobs:
+        logger.info("Running job %s.", job.job_id)
+
+    for job in jobs:
+        job.result()
+
+
+if __name__ == "__main__":
+    import tyro
+
+    tyro.cli(main)

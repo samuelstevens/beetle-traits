@@ -7,6 +7,8 @@ import subprocess
 import time
 
 import beartype
+import jax
+import numpy as np
 
 
 @beartype.beartype
@@ -270,3 +272,29 @@ def get_slurm_job_count() -> int:
     except (subprocess.SubprocessError, FileNotFoundError):
         # If we can't check, assume no jobs
         return 0
+
+
+@beartype.beartype
+def is_device_array(x: object) -> bool:
+    """Check whether an object is a numeric array suitable for `jax.device_put`."""
+    if isinstance(x, (jax.Array, np.ndarray)):
+        dt = getattr(x, "dtype", None)
+        if dt is None:
+            return False
+        return (
+            np.issubdtype(dt, np.bool_)
+            or np.issubdtype(dt, np.integer)
+            or np.issubdtype(dt, np.unsignedinteger)
+            or np.issubdtype(dt, np.floating)
+            or np.issubdtype(dt, np.complexfloating)
+        )
+    return False
+
+
+@beartype.beartype
+def to_device(batch: dict[str, object], device=None) -> tuple[dict, dict]:
+    """Split a batch dict into numeric arrays (sent to device) and metadata (strings, etc)."""
+    numeric = {k: v for k, v in batch.items() if is_device_array(v)}
+    aux = {k: v for k, v in batch.items() if not is_device_array(v)}
+    numeric = jax.device_put(numeric, device)
+    return numeric, aux

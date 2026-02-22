@@ -21,6 +21,10 @@ uv run launch.py \
 
 If nothing blows up, and you see some training logs, you're training!
 
+## Testing
+
+`just test` runs fast unit tests. `just test-all` also runs slow integration tests (e2e train-then-infer, real ViT checkpoints). The `.env` file sets `DINOV3_JAX_CKPTS` and `DINOV3_PT_CKPTS` so that conftest can find checkpoint files; `just` loads `.env` automatically via `set dotenv-load`.
+
 ## Data
 
 https://huggingface.co/datasets/imageomics/2018-NEON-beetles
