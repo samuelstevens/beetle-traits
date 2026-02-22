@@ -43,7 +43,7 @@ def test_train_then_infer_end_to_end(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    ckpt_fpath = tmp_path / "model.eqx"
+    ckpt_dpath = tmp_path / "checkpoints"
 
     # 1) Train for 1 step.
     train_cfg = train.Config(
@@ -60,14 +60,17 @@ def test_train_then_infer_end_to_end(
         val=train.ValConfig(every=1_000_000, n_fixed=1),
         save_every=1_000_000,
         log_every=1,
-        ckpt_fpath=ckpt_fpath,
+        ckpt_dpath=ckpt_dpath,
         wandb_project="test",
     )
 
     monkeypatch.setenv("WANDB_MODE", "disabled")
     train.train(train_cfg)
 
-    assert ckpt_fpath.exists()
+    # Find the checkpoint saved under {ckpt_dpath}/{run_id}/model.eqx.
+    ckpt_fpaths = list(ckpt_dpath.glob("*/model.eqx"))
+    assert len(ckpt_fpaths) == 1, f"Expected 1 checkpoint, found {ckpt_fpaths}"
+    ckpt_fpath = ckpt_fpaths[0]
 
     # 2) Run inference on Hawaii val.
     out_fpath = tmp_path / "results.parquet"

@@ -3,7 +3,7 @@
 3 runs: sigma=1, LR in {0.03, 0.1, 0.3}. These bracket the BioRepo-optimal LR from exp 004. Each run saves a checkpoint at the end for inference.
 
 Run with:
-    uv run launch.py train --sweep docs/experiments/005-active-learning/sweep.py
+    uv run launch.py train --sweep docs/experiments/005-active-learning/sweeps/train.py
 """
 
 import pathlib
@@ -36,9 +36,9 @@ def _make_run(*, lr: float, run_i: int) -> dict:
         "n_steps": 60_000,
         "n_hours": 12.0,
         "tags": ["exp-005-al"],
+        "ckpt_dpath": "checkpoints/exp005",
         "objective": btx.objectives.Heatmap(heatmap_size=64, sigma=1.0),
         "model": btx.modeling.heatmap.Heatmap(dinov3_ckpt=DINO_CKPT_FPATH),
-        "ckpt_fpath": f"logs/exp005_lr{lr}_sigma1.eqx",
         "hawaii": {
             "hf_root": HAWAII_HF_ROOT,
             "annotations": HAWAII_ANN_FPATH,

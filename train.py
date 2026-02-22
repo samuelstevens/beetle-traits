@@ -132,8 +132,8 @@ class Config:
     """Total number of training steps."""
     log_to: pathlib.Path = pathlib.Path("./logs")
     learning_rate: float = 3e-4
-    ckpt_fpath: pathlib.Path = pathlib.Path("model.eqx")
-    """Where to save the final model checkpoint."""
+    ckpt_dpath: pathlib.Path = pathlib.Path("./checkpoints")
+    """Directory for checkpoints. Final checkpoint is saved to {ckpt_dpath}/{wandb_run_id}/model.eqx."""
 
     wandb_project: str = "beetle-traits"
     slurm_acct: str = ""
@@ -656,9 +656,11 @@ def train(cfg: Config):
         project=cfg.wandb_project,
         config=dataclasses.asdict(cfg),
         tags=cfg.tags,
-        # Hidden wandb folder
         dir=".wandb",
     )
+    ckpt_dpath = cfg.ckpt_dpath / run.id
+    ckpt_dpath.mkdir(parents=True, exist_ok=True)
+    logger.info("Checkpoint dir: %s", ckpt_dpath)
 
     # Training
     for step, batch in enumerate(train_dl):
@@ -709,8 +711,9 @@ def train(cfg: Config):
         if step >= cfg.n_steps:
             break
 
-    btx.modeling.save_ckpt(model, cfg.model, cfg.objective, cfg.ckpt_fpath)
-    logger.info("Saved checkpoint to '%s'.", cfg.ckpt_fpath)
+    ckpt_fpath = ckpt_dpath / "model.eqx"
+    btx.modeling.save_ckpt(model, cfg.model, cfg.objective, ckpt_fpath)
+    logger.info("Saved checkpoint to '%s'.", ckpt_fpath)
 
 
 @beartype.beartype

@@ -18,6 +18,7 @@ import polars as pl
 import tyro
 from jaxtyping import Array, Float, jaxtyped
 
+import btx.configs
 import btx.data
 import btx.data.transforms
 import btx.helpers
@@ -49,7 +50,7 @@ SCHEMA = pl.Schema({
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
 class Config:
-    ckpt_fpath: pathlib.Path
+    ckpt_fpath: pathlib.Path = pathlib.Path("model.eqx")
     """Path to saved model checkpoint (.eqx file). Contains both model config and weights."""
     hawaii: btx.data.HawaiiConfig = btx.data.HawaiiConfig()
     """Hawaii dataset config. Set --hawaii.go=False to skip."""
@@ -223,31 +224,66 @@ def infer(cfg: Config):
     assert len(df.columns) == len(SCHEMA), (
         f"Column count mismatch: {len(df.columns)} != {len(SCHEMA)}"
     )
+    cfg.out_fpath.parent.mkdir(parents=True, exist_ok=True)
     df.write_parquet(cfg.out_fpath)
     logger.info("Wrote %d rows to '%s'.", len(df), cfg.out_fpath)
 
 
 @beartype.beartype
-def main(cfg: tp.Annotated[Config, tyro.conf.arg(name="")]):
-    if cfg.slurm_acct:
+def main(
+    cfg: tp.Annotated[Config, tyro.conf.arg(name="")],
+    sweep: pathlib.Path | None = None,
+):
+    if sweep is None:
+        cfgs = [cfg]
+    else:
+        sweep_dcts = btx.configs.load_sweep(sweep)
+        if not sweep_dcts:
+            logger.error("No valid sweeps found in '%s'.", sweep)
+            return
+
+        cfgs, errs = btx.configs.load_cfgs(cfg, default=Config(), sweep_dcts=sweep_dcts)
+        if errs:
+            for err in errs:
+                logger.warning("Error in config: %s", err)
+            return
+
+    base = cfgs[0]
+    for c in cfgs[1:]:
+        msg = "Sweep configs must share slurm_acct, slurm_partition, n_hours, n_workers, and log_to."
+        assert c.slurm_acct == base.slurm_acct, msg
+        assert c.slurm_partition == base.slurm_partition, msg
+        assert c.n_hours == base.n_hours, msg
+        assert c.n_workers == base.n_workers, msg
+        assert c.log_to == base.log_to, msg
+
+    if base.slurm_acct:
         import submitit
 
-        executor = submitit.SlurmExecutor(folder=cfg.log_to)
+        executor = submitit.SlurmExecutor(folder=base.log_to)
         executor.update_parameters(
             job_name="beetle-infer",
-            time=int(cfg.n_hours * 60),
-            partition=cfg.slurm_partition,
+            time=int(base.n_hours * 60),
+            partition=base.slurm_partition,
             gpus_per_node=1,
             ntasks_per_node=1,
-            cpus_per_task=cfg.n_workers + 4,
+            cpus_per_task=base.n_workers + 4,
             stderr_to_stdout=True,
-            account=cfg.slurm_acct,
+            account=base.slurm_acct,
         )
-        job = executor.submit(infer, cfg)
-        logger.info("Submitted slurm job %s.", job.job_id)
-        job.result()
     else:
-        infer(cfg)
+        import submitit
+
+        executor = submitit.DebugExecutor(folder=base.log_to)
+
+    with executor.batch():
+        jobs = [executor.submit(infer, c) for c in cfgs]
+
+    for job in jobs:
+        logger.info("Running job %s.", job.job_id)
+
+    for job in jobs:
+        job.result()
 
 
 if __name__ == "__main__":
