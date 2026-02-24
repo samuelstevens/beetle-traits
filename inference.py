@@ -2,6 +2,10 @@
 """Run a trained model over labeled datasets and save per-sample results to Parquet.
 
 Produces predictions, errors, heatmap diagnostics, and CLS embeddings for every sample. The output Parquet drives the active learning analysis notebook.
+
+TODO: BioRepo defaults to split="val", so inference only covers the labeled val subset. For active learning we need inference over all labeled samples (train + val). Either add split="all" support to BioRepoConfig or run two inference passes.
+
+TODO: Let's use our dataframe to plot a couple examples with their ground truth annotations and their predictions. Look at the code in @docs/experiments/004-heatmap/demo.py for examples of plotting images with annotations.
 """
 
 import dataclasses
@@ -37,6 +41,9 @@ SCHEMA = pl.Schema({
     "sample_loss": pl.Float32,
     "width_line_err_cm": pl.Float32,
     "length_line_err_cm": pl.Float32,
+    # Ground truth trait lengths in cm (NaN when scalebar/mask invalid)
+    "gt_width_cm": pl.Float32,
+    "gt_length_cm": pl.Float32,
     # Heatmap diagnostics
     "mean_entropy": pl.Float32,
     # Coordinates: flat [w0_x, w0_y, w1_x, w1_y, l0_x, l0_y, l1_x, l1_y]
@@ -85,14 +92,18 @@ class InferAux(eqx.Module):
 
     pred_coords_px: Float[Array, "batch 2 2 2"]
     """Predicted endpoints in original-image coordinates."""
+    gt_coords_px: Float[Array, "batch 2 2 2"]
+    """Ground truth endpoints in original-image coordinates."""
     cls_embedding: Float[Array, "batch embed_dim"]
     """CLS token from frozen ViT backbone."""
     mean_entropy: Float[Array, " batch"]
     """Mean heatmap entropy across 4 channels."""
-    # Error metrics (NaN when ground truth is masked/missing).
+    # Error/GT metrics (NaN when ground truth is masked/missing).
     sample_loss: Float[Array, " batch"]
     width_line_err_cm: Float[Array, " batch"]
     length_line_err_cm: Float[Array, " batch"]
+    gt_width_cm: Float[Array, " batch"]
+    gt_length_cm: Float[Array, " batch"]
 
 
 @eqx.filter_jit()
@@ -136,9 +147,12 @@ def forward_batch(
     )
     metric_mask_line = mask_line * scalebar_valid[:, None]
 
-    # Line-length errors in cm.
+    # Line lengths in cm and errors.
     pred_line_len = jnp.linalg.norm(preds_orig[:, :, 0] - preds_orig[:, :, 1], axis=-1)
     tgt_line_len = jnp.linalg.norm(tgts_orig[:, :, 0] - tgts_orig[:, :, 1], axis=-1)
+    tgt_line_cm = jnp.where(
+        metric_mask_line > 0, tgt_line_len / px_per_cm[:, None], jnp.nan
+    )
     line_err_cm = jnp.abs(pred_line_len - tgt_line_len) / px_per_cm[:, None]
     line_err_cm = jnp.where(metric_mask_line > 0, line_err_cm, jnp.nan)
 
@@ -156,11 +170,14 @@ def forward_batch(
 
     return InferAux(
         pred_coords_px=preds_orig,
+        gt_coords_px=batch["points_px"],
         cls_embedding=cls_bd,
         mean_entropy=mean_entropy,
         sample_loss=sample_loss,
         width_line_err_cm=line_err_cm[:, 0],
         length_line_err_cm=line_err_cm[:, 1],
+        gt_width_cm=tgt_line_cm[:, 0],
+        gt_length_cm=tgt_line_cm[:, 1],
     )
 
 
@@ -179,11 +196,11 @@ def batch_to_rows(aux: InferAux, metadata: dict, dataset_key: str) -> list[dict]
             "sample_loss": float(aux.sample_loss[i]),
             "width_line_err_cm": float(aux.width_line_err_cm[i]),
             "length_line_err_cm": float(aux.length_line_err_cm[i]),
+            "gt_width_cm": float(aux.gt_width_cm[i]),
+            "gt_length_cm": float(aux.gt_length_cm[i]),
             "mean_entropy": float(aux.mean_entropy[i]),
             "pred_coords_px": np.asarray(aux.pred_coords_px[i]).reshape(8).tolist(),
-            "gt_coords_px": metadata["points_px"][i].reshape(8).tolist()
-            if "points_px" in metadata
-            else [float("nan")] * 8,
+            "gt_coords_px": np.asarray(aux.gt_coords_px[i]).reshape(8).tolist(),
             "cls_embedding": np.asarray(aux.cls_embedding[i]).tolist(),
         })
     return rows
@@ -198,7 +215,8 @@ def infer(cfg: Config):
     heatmap_cfg = objective_cfg
 
     ds_cfgs: list[btx.data.Config] = [cfg.hawaii, cfg.beetlepalooza, cfg.biorepo]
-    eval_aug = btx.data.transforms.AugmentConfig()
+    # go=False disables stochastic augmentation (crop, flip, rotation, color jitter). The eval path in make_transforms() also triggers on is_train=False, so either flag alone is sufficient, but we set both for clarity. Only `size` and `normalize` matter at eval time.
+    aug_cfg = btx.data.transforms.AugmentConfig(go=False, size=256, normalize=True)
     rows: list[dict] = []
     for ds_cfg in ds_cfgs:
         if not ds_cfg.go:
@@ -206,7 +224,7 @@ def infer(cfg: Config):
         ds = ds_cfg.dataset(ds_cfg)
         dl = btx.data.make_dataloader(
             [ds],
-            [eval_aug],
+            [aug_cfg],
             seed=0,
             batch_size=cfg.batch_size,
             n_workers=cfg.n_workers,

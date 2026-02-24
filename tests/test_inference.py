@@ -98,6 +98,13 @@ def test_train_then_infer_end_to_end(
     pred_coords = np.array(df["pred_coords_px"].to_list())
     assert np.isfinite(pred_coords).all()
 
+    gt_coords = np.array(df["gt_coords_px"].to_list())
+    assert np.isfinite(gt_coords).all()
+
+    gt_length = df["gt_length_cm"].to_numpy()
+    assert np.isfinite(gt_length).all()
+    assert (gt_length > 0).all()
+
     cls_embeddings = np.array(df["cls_embedding"].to_list())
     assert np.isfinite(cls_embeddings).all()
     assert cls_embeddings.shape == (len(df), 384)
