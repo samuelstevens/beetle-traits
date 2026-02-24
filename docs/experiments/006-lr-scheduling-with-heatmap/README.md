@@ -1,4 +1,4 @@
-# 005 - Learning Rate Scheduling with Heatmap Objective
+# 006 - Learning Rate Scheduling with Heatmap Objective
 
 Goal: repeat the LR scheduling sweep from experiment 003, but using the heatmap objective and model instead of the frozen DINOv3 + MLP head.
 
@@ -25,7 +25,7 @@ How to run:
 
 ```sh
 uv run launch.py \
-  --sweep docs/experiments/005-lr-scheduling-with-heatmap/sweep.py
+  --sweep docs/experiments/006-lr-scheduling-with-heatmap/sweep.py
 ```
 
 ## Results
@@ -34,7 +34,7 @@ Best and final validation loss vs learning rate for BioRepo (left) and Hawaii (r
 
 ![LR scheduling with heatmap sweep results](fig1.png)
 
-These plots come from `notebook.py` in this folder. We load W&B runs tagged `exp-005-lr-scheduling-with-heatmap`, compute each run's best (min) and final validation loss, and plot them against learning rate on log-log axes.
+These plots come from `notebook.py` in this folder. We load W&B runs tagged `exp-006-lr-scheduling-with-heatmap`, compute each run's best (min) and final validation loss, and plot them against learning rate on log-log axes.
 
 Observations:
 
