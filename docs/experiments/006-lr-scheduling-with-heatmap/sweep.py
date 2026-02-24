@@ -5,7 +5,7 @@ This sweep tests different LR schedules:
 - WSD (Warmup-Stable-Decay) schedule with different configurations
 
 Run with:
-    uv run launch.py --sweep docs/experiments/003-lr-scheduling/sweep.py
+    uv run launch.py --sweep docs/experiments/006-lr-scheduling/sweep.py
 """
 
 import pathlib
@@ -56,7 +56,7 @@ def _make_run(
         "warmup_steps": warmup_steps,
         "decay_steps": decay_steps,
         "tags": [
-            "exp-005-lr-scheduling-with-heatmap",
+            "exp-006-lr-scheduling-with-heatmap",
             name,
         ],
         "objective": btx.objectives.Heatmap(heatmap_size=64, sigma=1.0),

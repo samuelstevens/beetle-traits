@@ -157,7 +157,7 @@ def _(history_df, pl, plt):
             _plot_schedule(_axes[_i + 1, _j], _summary, _s)
             _style_ax(_axes[_i + 1, _j], f"{_dataset} ({_s})")
 
-    _fig.savefig("docs/experiments/005-lr-scheduling/fig1.png")
+    _fig.savefig("docs/experiments/006-lr-scheduling/fig1.png")
     _fig
     return
 
