@@ -251,4 +251,5 @@ class Dataset(utils.Dataset):
             beetle_position=row["beetle_position"],
             group_img_basename=row["group_img_basename"],
             scientific_name=row["scientific_name"],
+            split="train",
         )

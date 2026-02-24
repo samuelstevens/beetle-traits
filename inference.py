@@ -3,8 +3,6 @@
 
 Produces predictions, errors, heatmap diagnostics, and CLS embeddings for every sample. The output Parquet drives the active learning analysis notebook.
 
-TODO: BioRepo defaults to split="val", so inference only covers the labeled val subset. For active learning we need inference over all labeled samples (train + val). Either add split="all" support to BioRepoConfig or run two inference passes.
-
 TODO: Let's use our dataframe to plot a couple examples with their ground truth annotations and their predictions. Look at the code in @docs/experiments/004-heatmap/demo.py for examples of plotting images with annotations.
 """
 
@@ -37,6 +35,7 @@ SCHEMA = pl.Schema({
     "group_img_basename": pl.String,
     "img_fpath": pl.String,
     "dataset": pl.String,
+    "split": pl.String,
     # Scalar metrics (NaN when ground truth is missing/masked)
     "sample_loss": pl.Float32,
     "width_line_err_cm": pl.Float32,
@@ -193,6 +192,7 @@ def batch_to_rows(aux: InferAux, metadata: dict, dataset_key: str) -> list[dict]
             "group_img_basename": metadata["group_img_basename"][i],
             "img_fpath": metadata["img_fpath"][i],
             "dataset": dataset_key,
+            "split": metadata["split"][i],
             "sample_loss": float(aux.sample_loss[i]),
             "width_line_err_cm": float(aux.width_line_err_cm[i]),
             "length_line_err_cm": float(aux.length_line_err_cm[i]),

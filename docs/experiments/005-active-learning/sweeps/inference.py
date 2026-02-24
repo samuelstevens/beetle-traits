@@ -1,6 +1,6 @@
 """Inference sweep for experiment 005.
 
-Runs inference on all three training checkpoints (LR=0.03, 0.1, 0.3) over Hawaii (train+val) + BioRepo (val only; BioRepo has no train split since it's the evaluation domain). One Parquet per checkpoint+split combo.
+Runs inference on all three training checkpoints (LR=0.03, 0.1, 0.3) over Hawaii (all splits) + BioRepo (all splits). One Parquet per checkpoint.
 
 Run with:
     uv run launch.py inference --sweep docs/experiments/005-active-learning/sweeps/inference.py
@@ -24,12 +24,6 @@ RUN_IDS = ["gxdlfrgd", "egqr97d7", "v1t5i5tq"]
 
 OUT_DPATH = pathlib.Path("docs/experiments/005-active-learning/results")
 
-HAWAII_BASE = {
-    "hf_root": HAWAII_HF_ROOT,
-    "annotations": HAWAII_ANN_FPATH,
-    "include_polylines": False,
-}
-
 SLURM = {
     "slurm_acct": "PAS2136",
     "slurm_partition": "nextgen",
@@ -40,29 +34,21 @@ SLURM = {
 def make_cfgs() -> list[dict]:
     cfgs = []
     for run_id in RUN_IDS:
-        ckpt = f"checkpoints/exp005/{run_id}/model.eqx"
-
-        # Hawaii train + BioRepo val
         cfgs.append({
-            "ckpt_fpath": ckpt,
-            "out_fpath": str(OUT_DPATH / f"{run_id}_train.parquet"),
-            "hawaii": {**HAWAII_BASE, "split": "train"},
+            "ckpt_fpath": f"checkpoints/exp005/{run_id}/model.eqx",
+            "out_fpath": str(OUT_DPATH / f"{run_id}.parquet"),
+            "hawaii": {
+                "hf_root": HAWAII_HF_ROOT,
+                "annotations": HAWAII_ANN_FPATH,
+                "include_polylines": False,
+                "split": "all",
+            },
             "beetlepalooza": {"go": False},
             "biorepo": {
                 "root": BIOREPO_ROOT,
                 "annotations": BIOREPO_ANN_FPATH,
-                "split": "val",
+                "split": "all",
             },
-            **SLURM,
-        })
-
-        # Hawaii val (BioRepo val already covered above)
-        cfgs.append({
-            "ckpt_fpath": ckpt,
-            "out_fpath": str(OUT_DPATH / f"{run_id}_val.parquet"),
-            "hawaii": {**HAWAII_BASE, "split": "val"},
-            "beetlepalooza": {"go": False},
-            "biorepo": {"go": False},
             **SLURM,
         })
 

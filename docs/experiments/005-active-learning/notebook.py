@@ -21,7 +21,7 @@ def _(mo):
     mo.md("""
     # Experiment 005: Active Learning Analysis
 
-    Three training runs with sigma=1, LR in {0.03, 0.1, 0.3}. Inference over Hawaii (train split) + BioRepo.
+    Three training runs with sigma=1, LR in {0.03, 0.1, 0.3}. Inference over Hawaii (all splits) + BioRepo (all splits).
 
     **Goal metric**: percent error = |pred_length - gt_length| / gt_length * 100. Target: consistently below 0.3% (collaborator's CV^2 threshold). This ensures prediction error is proportional to body size.
     """)
@@ -40,16 +40,14 @@ def _(pathlib, pl):
 
     dfs = []
     for run_id, lr in run_ids.items():
-        for split in ["train", "val"]:
-            fpath = results_dpath / f"{run_id}_{split}.parquet"
-            if not fpath.exists():
-                continue
-            df = pl.read_parquet(fpath).with_columns(
-                pl.lit(lr).alias("learning_rate"),
-                pl.lit(run_id).alias("run_id"),
-                pl.lit(split).alias("split"),
-            )
-            dfs.append(df)
+        fpath = results_dpath / f"{run_id}.parquet"
+        if not fpath.exists():
+            continue
+        df = pl.read_parquet(fpath).with_columns(
+            pl.lit(lr).alias("learning_rate"),
+            pl.lit(run_id).alias("run_id"),
+        )
+        dfs.append(df)
 
     all_df = pl.concat(dfs).with_columns(
         (pl.col("length_line_err_cm") / pl.col("gt_length_cm") * 100).alias(

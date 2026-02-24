@@ -43,3 +43,4 @@ class Sample(tp.TypedDict):
     beetle_position: int
     group_img_basename: str
     scientific_name: str
+    split: str

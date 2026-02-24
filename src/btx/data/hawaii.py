@@ -81,7 +81,7 @@ class Config(utils.Config):
     """Path to the annotations.json file made by running format_hawaii.py."""
     include_polylines: bool = True
     """Whether to include polylines (lines with more than 2 points)."""
-    split: tp.Literal["train", "val"] = "train"
+    split: tp.Literal["train", "val", "all"] = "train"
     """Which split."""
     # Split-related configuration.
     seed: int = 0
@@ -219,7 +219,8 @@ class Dataset(utils.Dataset):
 
     def __init__(self, cfg: Config):
         self._cfg = cfg
-        self.df = _grouped_split(cfg).filter(pl.col("split") == cfg.split)
+        df = _grouped_split(cfg)
+        self.df = df if cfg.split == "all" else df.filter(pl.col("split") == cfg.split)
 
         self.logger = logging.getLogger("hawaii-ds")
 
@@ -297,4 +298,5 @@ class Dataset(utils.Dataset):
             beetle_position=row["beetle_position"],
             group_img_basename=row["group_img_basename"],
             scientific_name=row["scientific_name"],
+            split=row["split"],
         )
