@@ -9,5 +9,5 @@ wandb/
 # Testing
 .hypothesis
 .coverage
-
+.claude
 .env
