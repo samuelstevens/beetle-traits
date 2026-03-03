@@ -1,4 +1,4 @@
-"""Tests for split="all" support in dataset configs."""
+"""Tests for split="all" and split="unlabeled" support in dataset configs."""
 
 import pathlib
 
@@ -17,6 +17,9 @@ BIOREPO_ROOT = pathlib.Path("/fs/scratch/PAS2136/cain429/Subset-Exp")
 BIOREPO_ANN_FPATH = pathlib.Path(
     "/fs/scratch/PAS2136/cain429/biorepo-formatted/annotations.json"
 )
+BIOREPO_UNLABELED_ANN_FPATH = pathlib.Path(
+    "/fs/scratch/PAS2136/cain429/unlabeled_biorepo_annotations.csv"
+)
 
 # ---------------------------------------------------------------------------
 # Unit tests (no data needed)
@@ -33,6 +36,10 @@ def test_hawaii_config_accepts_all():
 
 def test_biorepo_config_accepts_all():
     btx.data.biorepo.Config(split="all")
+
+
+def test_biorepo_config_accepts_unlabeled():
+    btx.data.biorepo.Config(split="unlabeled")
 
 
 # ---------------------------------------------------------------------------
@@ -98,3 +105,23 @@ def test_biorepo_all_samples_have_split():
         assert sample["split"] in ("train", "val"), (
             f"Sample {i} has split={sample['split']!r}"
         )
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    not BIOREPO_UNLABELED_ANN_FPATH.is_file(),
+    reason="Unlabeled BioRepo annotations CSV not available",
+)
+def test_biorepo_unlabeled_sample_has_none_annotations():
+    ds = btx.data.biorepo.Dataset(
+        btx.data.biorepo.Config(split="unlabeled")
+    )
+    assert len(ds) > 0
+    sample = ds[0]
+    assert sample["split"] == "unlabeled"
+    assert sample["points_px"] is None
+    assert sample["scalebar_px"] is None
+    assert sample["scalebar_valid"] is None
+    assert sample["loss_mask"] is None
+    assert isinstance(sample["img_fpath"], str)
+    assert pathlib.Path(sample["img_fpath"]).is_file()

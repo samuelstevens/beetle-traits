@@ -21,7 +21,11 @@ class Config(utils.Config):
     """Path to the dataset root"""
     annotations: pathlib.Path = pathlib.Path("data/biorepo-formatted/annotations.json")
     """Path to the annotations.json file made by running format_biorepo.py."""
-    split: tp.Literal["train", "val", "test", "all"] = "val"
+    unlabeled_annotations: pathlib.Path = pathlib.Path(
+        "/fs/scratch/PAS2136/cain429/unlabeled_biorepo_annotations.csv"
+    )
+
+    split: tp.Literal["train", "val", "test", "all", "unlabeled"] = "val"
     """Which split."""
 
     @property
@@ -165,18 +169,26 @@ class Dataset(utils.Dataset):
 
     def __init__(self, cfg: Config):
         self._cfg = cfg
-        df = _grouped_split(cfg)
-        self.df = df if cfg.split == "all" else df.filter(pl.col("split") == cfg.split)
+        if cfg.split == "unlabeled":
+            self.df = pl.read_csv(cfg.unlabeled_annotations)
+        else:
+            df = _grouped_split(cfg)
+            self.df = (
+                df if cfg.split == "all" else df.filter(pl.col("split") == cfg.split)
+            )
 
         self.logger = logging.getLogger("biorepo-ds")
 
         # do not include annotations with more than 2 points
-        self.df = self.df.filter(
-            pl.col("measurements").map_elements(
-                lambda measurements: all(len(m["polyline"]) == 2 for m in measurements),
-                return_dtype=pl.Boolean,
+        if cfg.split != "unlabeled":
+            self.df = self.df.filter(
+                pl.col("measurements").map_elements(
+                    lambda measurements: all(
+                        len(m["polyline"]) == 2 for m in measurements
+                    ),
+                    return_dtype=pl.Boolean,
+                )
             )
-        )
 
         msg = f"BioRepo dataset is empty for split={cfg.split}."
         assert self.df.height > 0, msg
@@ -191,6 +203,24 @@ class Dataset(utils.Dataset):
     def __getitem__(self, idx: tp.SupportsIndex) -> utils.Sample:
         """Load image and annotations for given index."""
         row = self.df.row(index=int(idx), named=True)
+
+        if self._cfg.split == "unlabeled":
+            fpath = pathlib.Path(row["abs_individual_img_path"])
+            assert fpath.is_file(), f"Image not found: {fpath}"
+            group_img_basename = (row["group_img"] or "").removesuffix(".png")
+            return utils.Sample(
+                img_fpath=str(fpath),
+                points_px=None,
+                scalebar_px=None,
+                scalebar_valid=None,
+                loss_mask=None,
+                beetle_id=row["individual_id"] or "",
+                beetle_position=row["beetle_position"],
+                group_img_basename=group_img_basename,
+                scientific_name=row["scientific_name"] or "",
+                split="unlabeled",
+            )
+
         fpath = self.cfg.root / row["rel_individual_img_path"]
         assert fpath.is_file(), f"Image not found: {fpath}"
 
