@@ -30,7 +30,9 @@ def _(mo):
 
 @app.cell
 def _(pathlib, pl):
-    results_dpath = pathlib.Path("docs/experiments/005-active-learning/results")
+    results_dpath = pathlib.Path(
+        "/fs/ess/PAS2136/samuelstevens/beetle-traits/005-active-learning/results"
+    )
 
     run_ids = {
         "gxdlfrgd": 0.03,
@@ -40,7 +42,7 @@ def _(pathlib, pl):
 
     dfs = []
     for run_id, lr in run_ids.items():
-        fpath = results_dpath / f"{run_id}.parquet"
+        fpath = results_dpath / f"{run_id}_labeled.parquet"
         if not fpath.exists():
             continue
         df = pl.read_parquet(fpath).with_columns(
@@ -53,9 +55,7 @@ def _(pathlib, pl):
         (pl.col("length_line_err_cm") / pl.col("gt_length_cm") * 100).alias(
             "length_pct_err"
         ),
-        (pl.col("width_line_err_cm") / pl.col("gt_width_cm") * 100).alias(
-            "width_pct_err"
-        ),
+        (pl.col("width_line_err_cm") / pl.col("gt_width_cm") * 100).alias("width_pct_err"),
     )
     return (all_df,)
 
@@ -71,8 +71,7 @@ def _(mo):
 @app.cell
 def _(all_df, pl):
     summary = (
-        all_df
-        .group_by("learning_rate", "dataset")
+        all_df.group_by("learning_rate", "dataset")
         .agg(
             pl.col("length_pct_err").median().alias("median_length_pct_err"),
             pl.col("length_pct_err").mean().alias("mean_length_pct_err"),
@@ -99,8 +98,7 @@ def _(mo):
 @app.cell
 def _(all_df, alt, pl):
     pct_df = (
-        all_df
-        .select("dataset", "learning_rate", "length_pct_err", "width_pct_err")
+        all_df.select("dataset", "learning_rate", "length_pct_err", "width_pct_err")
         .unpivot(
             on=["length_pct_err", "width_pct_err"],
             index=["dataset", "learning_rate"],
@@ -134,8 +132,7 @@ def _(mo):
 @app.cell
 def _(all_df, alt, pl):
     err_df = (
-        all_df
-        .select("dataset", "learning_rate", "width_line_err_cm", "length_line_err_cm")
+        all_df.select("dataset", "learning_rate", "width_line_err_cm", "length_line_err_cm")
         .unpivot(
             on=["width_line_err_cm", "length_line_err_cm"],
             index=["dataset", "learning_rate"],
@@ -169,8 +166,7 @@ def _(mo):
 @app.cell
 def _(all_df, pl):
     species_err = (
-        all_df
-        .group_by("scientific_name", "dataset")
+        all_df.group_by("scientific_name", "dataset")
         .agg(
             pl.col("length_pct_err").median().alias("median_length_pct_err"),
             pl.col("length_pct_err").mean().alias("mean_length_pct_err"),
@@ -234,17 +230,13 @@ def _(all_df, mo, np, pl):
 @app.cell
 def _(all_df, alt, pl):
     genus_df = (
-        all_df
-        .filter(pl.col("length_pct_err").is_finite())
-        .with_columns(
-            pl.col("scientific_name").str.split(" ").list.first().alias("genus")
-        )
+        all_df.filter(pl.col("length_pct_err").is_finite())
+        .with_columns(pl.col("scientific_name").str.split(" ").list.first().alias("genus"))
         .select("genus", "dataset", "length_pct_err")
     )
 
     genus_order = (
-        genus_df
-        .group_by("genus")
+        genus_df.group_by("genus")
         .agg(pl.col("length_pct_err").median().alias("median_pct_err"))
         .sort("median_pct_err", descending=True)
         .get_column("genus")
@@ -252,15 +244,13 @@ def _(all_df, alt, pl):
     )
 
     threshold = (
-        alt
-        .Chart(pl.DataFrame({"y": [0.3]}))
+        alt.Chart(pl.DataFrame({"y": [0.3]}))
         .mark_rule(color="red", strokeDash=[4, 4])
         .encode(y="y:Q")
     )
 
     boxes = (
-        alt
-        .Chart(genus_df)
+        alt.Chart(genus_df)
         .mark_boxplot(opacity=0.5, ticks=True)
         .encode(
             x=alt.X("genus:N", sort=genus_order, title="Genus"),
@@ -314,8 +304,7 @@ def _(mo):
 @app.cell
 def _(alt, pca_df):
     _base = (
-        alt
-        .Chart(pca_df)
+        alt.Chart(pca_df)
         .mark_circle(size=12, opacity=0.4)
         .encode(
             x=alt.X("pc1:Q", title="PC1"),
@@ -325,8 +314,7 @@ def _(alt, pca_df):
     )
 
     _err = (
-        _base
-        .encode(
+        _base.encode(
             color=alt.Color(
                 "length_pct_err:Q",
                 scale=alt.Scale(scheme="inferno", type="log"),
@@ -339,8 +327,7 @@ def _(alt, pca_df):
     )
 
     _entropy = (
-        _base
-        .encode(
+        _base.encode(
             color=alt.Color(
                 "mean_entropy:Q", scale=alt.Scale(scheme="viridis"), title="Entropy"
             ),
@@ -351,8 +338,7 @@ def _(alt, pca_df):
     )
 
     _genus = (
-        _base
-        .encode(
+        _base.encode(
             color=alt.Color("genus:N", legend=None),
             row=alt.Row("dataset:N"),
         )
@@ -378,7 +364,6 @@ def _(mo):
 def _():
     import matplotlib.pyplot as plt
     from PIL import Image
-
     return Image, plt
 
 
@@ -483,6 +468,65 @@ def _(all_df, mo, np, pl):
 
 {"".join(_rows)}
 """)
+@app.cell
+def _(alt, mo, np, pl, unlabeled_df):
+    def cross_run_entropy_corr():
+        from scipy.stats import rankdata
+
+        run_ids = ["gxdlfrgd", "egqr97d7", "v1t5i5tq"]
+        # Avoid '=' in column names -- Altair parses it as shorthand.
+        lr_labels = {"gxdlfrgd": "lr003", "egqr97d7": "lr01", "v1t5i5tq": "lr03"}
+        lr_titles = {"lr003": "LR=0.03", "lr01": "LR=0.1", "lr03": "LR=0.3"}
+
+        # Only need beetle_id + mean_entropy per run. Drop heavy columns early.
+        cols: dict[str, pl.Series] = {}
+        beetle_ids = None
+        for rid in mo.status.progress_bar(run_ids, title="Normalizing entropy"):
+            run = unlabeled_df.filter(pl.col("run_id") == rid)
+            if beetle_ids is None:
+                beetle_ids = run["beetle_id"]
+            ent = run["mean_entropy"].to_numpy()
+            col = lr_labels[rid]
+            cols[col] = pl.Series(col, rankdata(ent, method="average") / len(ent))
+
+        # Build wide dataframe without joins -- all runs share the same beetle_id order.
+        wide = pl.DataFrame({"beetle_id": beetle_ids, **cols})
+
+        pairs = [("lr003", "lr01"), ("lr003", "lr03"), ("lr01", "lr03")]
+
+        sample = wide.sample(n=min(5000, wide.height), seed=42)
+
+        charts = []
+        for xa, ya in mo.status.progress_bar(pairs, title="Building scatter plots"):
+            r = np.corrcoef(wide[xa].to_numpy(), wide[ya].to_numpy())[0, 1]
+            tx, ty = lr_titles[xa], lr_titles[ya]
+            diag = (
+                alt
+                .Chart(pl.DataFrame({"x": [0, 1], "y": [0, 1]}))
+                .mark_line(color="red", strokeDash=[4, 4])
+                .encode(x="x:Q", y="y:Q")
+            )
+            scatter = (
+                alt
+                .Chart(sample)
+                .mark_circle(size=6, opacity=0.2)
+                .encode(
+                    x=alt.X(f"{xa}:Q", title=tx, scale=alt.Scale(domain=[0, 1])),
+                    y=alt.Y(f"{ya}:Q", title=ty, scale=alt.Scale(domain=[0, 1])),
+                )
+                .properties(width=300, height=300, title=f"{tx} vs {ty} (r={r:.3f})")
+            )
+            charts.append(scatter + diag)
+
+        return charts[0] | charts[1] | charts[2]
+
+    mo.vstack([mo.md(r"""
+    ## Cross-run entropy correlation
+
+    Pairwise scatter plots of normalized entropy (percentile rank) across the three training runs for all unlabeled beetles. Points should cluster along the diagonal if runs agree on which beetles are uncertain. Off-diagonal scatter means one run's entropy signal is decorrelated, which would make our normalize-then-min aggregation noisy.
+    """), cross_run_entropy_corr()])
+    return
+
     return
 
 
