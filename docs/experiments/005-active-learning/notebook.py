@@ -12,7 +12,6 @@ def _():
     import marimo as mo
     import numpy as np
     import polars as pl
-
     return alt, mo, np, pathlib, pl
 
 
@@ -403,14 +402,14 @@ def _(Image, all_df, np, pl, plt):
         _gt = np.array(row["gt_coords_px"]).reshape(2, 2, 2)
         _pred = np.array(row["pred_coords_px"]).reshape(2, 2, 2)
 
-        for line_i, (gt_color, pred_color) in enumerate([
-            ("cyan", "lime"),
-            ("magenta", "yellow"),
-        ]):
+        for line_i, (gt_color, pred_color) in enumerate(
+            [
+                ("cyan", "lime"),
+                ("magenta", "yellow"),
+            ]
+        ):
             (gx0, gy0), (gx1, gy1) = _gt[line_i]
-            ax.plot(
-                [gx0, gx1], [gy0, gy1], "o-", color=gt_color, linewidth=2, markersize=4
-            )
+            ax.plot([gx0, gx1], [gy0, gy1], "o-", color=gt_color, linewidth=2, markersize=4)
             (px0, py0), (px1, py1) = _pred[line_i]
             ax.plot(
                 [px0, px1],
@@ -436,38 +435,185 @@ def _(Image, all_df, np, pl, plt):
 
 
 @app.cell
-def _(all_df, mo, np, pl):
-    _bug = all_df.filter(
-        pl.col("beetle_id") == "NEON.BET.D20.003085",
-        pl.col("run_id") == "egqr97d7",
+def _(pathlib, pl):
+    _results_dpath = pathlib.Path(
+        "/fs/ess/PAS2136/samuelstevens/beetle-traits/005-active-learning/results"
     )
-    _rows = []
-    for _i in range(_bug.height):
-        _r = _bug.row(_i, named=True)
-        _gt = np.array(_r["gt_coords_px"]).reshape(2, 2, 2)
-        _pred = np.array(_r["pred_coords_px"]).reshape(2, 2, 2)
-        _gt_w_len = np.linalg.norm(_gt[0, 0] - _gt[0, 1])
-        _gt_l_len = np.linalg.norm(_gt[1, 0] - _gt[1, 1])
-        _pred_w_len = np.linalg.norm(_pred[0, 0] - _pred[0, 1])
-        _pred_l_len = np.linalg.norm(_pred[1, 0] - _pred[1, 1])
-        _rows.append(f"""
-**split={_r["split"]}**
 
-| | GT | Pred | Abs Err (px) | Recomputed % Err |
-|---|---|---|---|---|
-| width endpoints | {_gt[0].tolist()} | {_pred[0].tolist()} | | |
-| width line len (px) | {_gt_w_len:.1f} | {_pred_w_len:.1f} | {abs(_pred_w_len - _gt_w_len):.1f} | {abs(_pred_w_len - _gt_w_len) / _gt_w_len * 100:.2f}% |
-| length endpoints | {_gt[1].tolist()} | {_pred[1].tolist()} | | |
-| length line len (px) | {_gt_l_len:.1f} | {_pred_l_len:.1f} | {abs(_pred_l_len - _gt_l_len):.1f} | {abs(_pred_l_len - _gt_l_len) / _gt_l_len * 100:.2f}% |
-| **Parquet values** | gt_length_cm={_r["gt_length_cm"]:.4f} | | length_line_err_cm={_r["length_line_err_cm"]:.4f} | length_pct_err={_r["length_line_err_cm"] / _r["gt_length_cm"] * 100:.2f}% |
-| | gt_width_cm={_r["gt_width_cm"]:.4f} | | width_line_err_cm={_r["width_line_err_cm"]:.4f} | width_pct_err={_r["width_line_err_cm"] / _r["gt_width_cm"] * 100:.2f}% |
-""")
+    _run_ids = {
+        "gxdlfrgd": 0.03,
+        "egqr97d7": 0.1,
+        "v1t5i5tq": 0.3,
+    }
+
+    _dfs = []
+    for _run_id, _lr in _run_ids.items():
+        _fpath = _results_dpath / f"{_run_id}_unlabeled.parquet"
+        if not _fpath.exists():
+            continue
+        _df = pl.read_parquet(_fpath).with_columns(
+            pl.lit(_lr).alias("learning_rate"),
+            pl.lit(_run_id).alias("run_id"),
+        )
+        _dfs.append(_df)
+
+    unlabeled_df = pl.concat(_dfs)
+    return (unlabeled_df,)
+
+
+@app.cell
+def _(mo, unlabeled_df):
+    mo.md(f"""
+    ## Unlabeled BioRepo data
+
+    **{unlabeled_df.height:,}** total rows ({unlabeled_df.n_unique("beetle_id"):,} unique beetles x {unlabeled_df.n_unique("run_id")} runs).
+    """)
+    return
+
+
+@app.cell
+def _(all_df, alt, pl, unlabeled_df):
+    _labeled = all_df.select("mean_entropy", "dataset", "learning_rate").with_columns(
+        pl.lit("labeled").alias("source")
+    )
+    _unlabeled = (
+        unlabeled_df.select("mean_entropy", "dataset", "learning_rate")
+        .sample(n=min(5000, unlabeled_df.height), seed=0)
+        .with_columns(pl.lit("unlabeled").alias("source"))
+    )
+    _ent_df = pl.concat([_labeled, _unlabeled]).with_columns(
+        pl.col("learning_rate").cast(pl.String)
+    )
+
+    alt.Chart(_ent_df).mark_boxplot(extent="min-max").encode(
+        x=alt.X("source:N", title=""),
+        y=alt.Y("mean_entropy:Q", title="Mean Heatmap Entropy"),
+        color="source:N",
+        column=alt.Column("learning_rate:N", title="Learning Rate"),
+    ).properties(width=200, height=300, title="Entropy: labeled vs unlabeled")
+    return
+
+
+@app.cell
+def _(all_df, alt, pl, unlabeled_df):
+    _labeled_ent = all_df.select("mean_entropy").with_columns(
+        pl.lit("labeled").alias("source")
+    )
+    _unlabeled_ent = (
+        unlabeled_df.filter(pl.col("run_id") == "egqr97d7")
+        .select("mean_entropy")
+        .sample(n=min(10000, unlabeled_df.height), seed=0)
+        .with_columns(pl.lit("unlabeled").alias("source"))
+    )
+    _hist_df = pl.concat([_labeled_ent, _unlabeled_ent])
+
+    alt.Chart(_hist_df).mark_bar(opacity=0.6).encode(
+        x=alt.X("mean_entropy:Q", bin=alt.Bin(maxbins=60), title="Mean Heatmap Entropy"),
+        y=alt.Y("count():Q", stack=None, title="Count"),
+        color="source:N",
+    ).properties(
+        width=600, height=300, title="Entropy histogram (LR=0.1 run for unlabeled)"
+    )
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md("""
+    ## Combined embedding PCA (labeled + unlabeled)
+
+    Project labeled and unlabeled BioRepo embeddings into a shared PCA space (LR=0.1 run). Color by source and by entropy.
+    """)
+    return
+
+
+@app.cell
+def _(all_df, alt, np, pl, unlabeled_df):
+    _lr_run = "egqr97d7"
+    _labeled_bio = all_df.filter(
+        pl.col("dataset") == "biorepo", pl.col("run_id") == _lr_run
+    )
+    _unlabeled_bio = unlabeled_df.filter(pl.col("run_id") == _lr_run)
+
+    # Sample unlabeled for plotting, but fit PCA on all data.
+    _unlabeled_sample = _unlabeled_bio.sample(n=min(10000, _unlabeled_bio.height), seed=0)
+
+    _emb_l = np.array(_labeled_bio["cls_embedding"].to_list())
+    _emb_u = np.array(_unlabeled_sample["cls_embedding"].to_list())
+    _emb_all = np.vstack([_emb_l, _emb_u])
+
+    _centered = _emb_all - _emb_all.mean(axis=0)
+    _, _, _vt = np.linalg.svd(_centered, full_matrices=False)
+    _proj = _centered @ _vt[:2].T
+
+    _combined = pl.concat(
+        [
+            _labeled_bio.select("mean_entropy", "scientific_name").with_columns(
+                pl.lit("labeled").alias("source")
+            ),
+            _unlabeled_sample.select("mean_entropy", "scientific_name").with_columns(
+                pl.lit("unlabeled").alias("source")
+            ),
+        ]
+    ).with_columns(
+        pl.Series("pc1", _proj[:, 0]),
+        pl.Series("pc2", _proj[:, 1]),
+        pl.col("scientific_name").str.split(" ").list.first().alias("genus"),
+    )
+
+    _base = (
+        alt.Chart(_combined)
+        .mark_circle(size=8, opacity=0.3)
+        .encode(
+            x=alt.X("pc1:Q", title="PC1"),
+            y=alt.Y("pc2:Q", title="PC2"),
+            tooltip=["genus:N", "source:N", "mean_entropy:Q"],
+        )
+    )
+
+    _by_source = _base.encode(color="source:N").properties(
+        width=400, height=400, title="Labeled vs unlabeled"
+    )
+    _by_entropy = _base.encode(
+        color=alt.Color(
+            "mean_entropy:Q", scale=alt.Scale(scheme="viridis"), title="Entropy"
+        ),
+    ).properties(width=400, height=400, title="Heatmap entropy")
+
+    _by_genus = _base.encode(color=alt.Color("genus:N", legend=None)).properties(
+        width=400, height=400, title="Genus"
+    )
+
+    _by_source | _by_entropy | _by_genus
+    return
+
+
+@app.cell
+def _(mo, np, pl, unlabeled_df):
+    _run = unlabeled_df.filter(pl.col("run_id") == "egqr97d7")
+    _ent = _run["mean_entropy"].to_numpy()
+    _q75 = np.percentile(_ent, 75)
+    _q90 = np.percentile(_ent, 90)
+    _q95 = np.percentile(_ent, 95)
 
     mo.md(f"""
-## Debug: NEON.BET.D20.003085
+    ## Unlabeled entropy summary (LR=0.1)
 
-{"".join(_rows)}
-""")
+    | Statistic | Value |
+    |---|---|
+    | Min | {_ent.min():.3f} |
+    | Median | {np.median(_ent):.3f} |
+    | Mean | {_ent.mean():.3f} |
+    | 75th pctl | {_q75:.3f} |
+    | 90th pctl | {_q90:.3f} |
+    | 95th pctl | {_q95:.3f} |
+    | Max | {_ent.max():.3f} |
+
+    High-entropy samples are candidates for active learning annotation.
+    """)
+    return
+
+
 @app.cell
 def _(alt, mo, np, pl, unlabeled_df):
     def cross_run_entropy_corr():
@@ -501,14 +647,12 @@ def _(alt, mo, np, pl, unlabeled_df):
             r = np.corrcoef(wide[xa].to_numpy(), wide[ya].to_numpy())[0, 1]
             tx, ty = lr_titles[xa], lr_titles[ya]
             diag = (
-                alt
-                .Chart(pl.DataFrame({"x": [0, 1], "y": [0, 1]}))
+                alt.Chart(pl.DataFrame({"x": [0, 1], "y": [0, 1]}))
                 .mark_line(color="red", strokeDash=[4, 4])
                 .encode(x="x:Q", y="y:Q")
             )
             scatter = (
-                alt
-                .Chart(sample)
+                alt.Chart(sample)
                 .mark_circle(size=6, opacity=0.2)
                 .encode(
                     x=alt.X(f"{xa}:Q", title=tx, scale=alt.Scale(domain=[0, 1])),
@@ -520,13 +664,173 @@ def _(alt, mo, np, pl, unlabeled_df):
 
         return charts[0] | charts[1] | charts[2]
 
-    mo.vstack([mo.md(r"""
+
+    mo.vstack(
+        [
+            mo.md(r"""
     ## Cross-run entropy correlation
 
     Pairwise scatter plots of normalized entropy (percentile rank) across the three training runs for all unlabeled beetles. Points should cluster along the diagonal if runs agree on which beetles are uncertain. Off-diagonal scatter means one run's entropy signal is decorrelated, which would make our normalize-then-min aggregation noisy.
-    """), cross_run_entropy_corr()])
+    """),
+            cross_run_entropy_corr(),
+        ]
+    )
     return
 
+
+@app.cell
+def _(mo, np, pathlib, pl, unlabeled_df):
+    def embedding_pca_selection_overlay():
+        from scipy.stats import rankdata
+
+        run_ids = ["gxdlfrgd", "egqr97d7", "v1t5i5tq"]
+
+        results_dpath = pathlib.Path(
+            "/fs/ess/PAS2136/samuelstevens/beetle-traits/005-active-learning/results"
+        )
+
+        # Selected group basenames from rank.py output.
+        selected_groups = set(
+            pl.read_csv(results_dpath / "round1_groups.csv")["group_img_basename"].to_list()
+        )
+
+        # Compute min(norm_entropy) across runs for each beetle.
+        # Use one run for embeddings + group_img_basename (frozen backbone, all identical).
+        ref_run = unlabeled_df.filter(pl.col("run_id") == run_ids[0])
+        beetle_ids = ref_run["beetle_id"].to_list()
+        group_basenames = ref_run["group_img_basename"].to_list()
+        n = len(beetle_ids)
+
+        min_norm_ent = np.ones(n, dtype=np.float64)
+        for rid in mo.status.progress_bar(run_ids, title="Computing min-entropy"):
+            run = unlabeled_df.filter(pl.col("run_id") == rid)
+            ent = run["mean_entropy"].to_numpy()
+            norm = rankdata(ent, method="average") / n
+            min_norm_ent = np.minimum(min_norm_ent, norm)
+
+        # Priority proxy: top 1857 by min-entropy (matches rank.py union priority set).
+        n_priority = 1857
+        priority_threshold = np.sort(min_norm_ent)[-n_priority]
+        is_priority = min_norm_ent >= priority_threshold
+
+        # 2x2: priority yes/no x in-selected-group yes/no.
+        categories = []
+        for i in mo.status.progress_bar(range(n), title="Categorizing"):
+            pri = is_priority[i]
+            sel = group_basenames[i] in selected_groups
+            if pri and sel:
+                categories.append("priority+selected")
+            elif pri and not sel:
+                categories.append("priority+not selected")
+            elif not pri and sel:
+                categories.append("not priority+selected")
+            else:
+                categories.append("other")
+
+        # Subsample to ~10K total. Keep all non-"other", subsample "other".
+        categories = np.array(categories)
+        rng = np.random.default_rng(42)
+        highlight_i = np.where(categories != "other")[0]
+        other_i = np.where(categories == "other")[0]
+        n_oth = min(len(other_i), 10_000 - len(highlight_i))
+        keep_i = np.sort(
+            np.concatenate(
+                [
+                    highlight_i,
+                    rng.choice(other_i, size=n_oth, replace=False),
+                ]
+            )
+        )
+
+        emb = np.array(ref_run["cls_embedding"].to_list(), dtype=np.float32)[keep_i]
+        keep_categories = categories[keep_i]
+
+        # UMAP to 2 dims (t-SNE hangs on this node due to BLAS threading issues).
+        import umap
+
+        proj = umap.UMAP(n_components=2, random_state=42, n_neighbors=30).fit_transform(emb)
+
+        import matplotlib.pyplot as plt
+
+        draw_order = [
+            "other",
+            "not priority+selected",
+            "priority+not selected",
+            "priority+selected",
+        ]
+        cat_colors = {
+            "other": "#cccccc",
+            "priority+not selected": "#ff8c00",
+            "not priority+selected": "#6baed6",
+            "priority+selected": "#e00000",
+        }
+        cat_sizes = {
+            "other": 4,
+            "priority+not selected": 8,
+            "not priority+selected": 8,
+            "priority+selected": 8,
+        }
+
+        def plot_scatter(ax, x, y, cats, title):
+            for cat in draw_order:
+                mask = cats == cat
+                if not mask.any():
+                    continue
+                ax.scatter(
+                    x[mask],
+                    y[mask],
+                    s=cat_sizes[cat],
+                    c=cat_colors[cat],
+                    alpha=0.3,
+                    label=f"{cat} ({mask.sum()})",
+                )
+            ax.set_xlabel("UMAP 1")
+            ax.set_ylabel("UMAP 2")
+            ax.set_title(title)
+            ax.legend(markerscale=3, fontsize=8)
+
+        fig, (ax_full, ax_zoom) = plt.subplots(
+            1, 2, figsize=(16, 8), dpi=100, layout="constrained"
+        )
+
+        # Left: full view.
+        plot_scatter(ax_full, proj[:, 0], proj[:, 1], keep_categories, "Full embedding")
+
+        # Right: re-run UMAP on the dense central cluster.
+        zoom_mask = (
+            (proj[:, 0] > 5) & (proj[:, 0] < 18) & (proj[:, 1] > 8) & (proj[:, 1] < 15)
+        )
+        zoom_emb = emb[zoom_mask]
+        zoom_cats = keep_categories[zoom_mask]
+        zoom_proj = umap.UMAP(
+            n_components=2, random_state=42, n_neighbors=15
+        ).fit_transform(zoom_emb)
+        plot_scatter(
+            ax_zoom,
+            zoom_proj[:, 0],
+            zoom_proj[:, 1],
+            zoom_cats,
+            f"Dense cluster ({zoom_mask.sum()} pts)",
+        )
+
+        out_fpath = pathlib.Path(
+            "docs/experiments/005-active-learning/results/umap-selection-overlay.png"
+        )
+        out_fpath.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out_fpath)
+
+        caption = mo.md(f"""
+    ## Embedding UMAP with selection overlay
+
+    Gray = not priority, orange = priority (top 1857 by min-entropy across runs), red = in a selected group. Red should be spread across the space if diversity is working. Clumping means the greedy loop is chasing one region.
+
+    Saved to `{out_fpath}`.
+    """)
+
+        return mo.vstack([caption, fig])
+
+
+    embedding_pca_selection_overlay()
     return
 
 
