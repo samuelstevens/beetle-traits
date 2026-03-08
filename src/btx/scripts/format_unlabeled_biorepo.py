@@ -189,8 +189,24 @@ def main(cfg: Config) -> None:
 
                 meta = metadata.get((group_stem, pos), {})
                 individual_id = meta.get("individual_id")
+                taxon_id = meta.get("taxon_id")
+                scientific_name = meta.get("scientific_name")
 
                 if individual_id and individual_id in excluded_ids:
+                    total_excluded += 1
+                    continue
+                missing_required = any(
+                    v is None
+                    for v in (
+                        group_img_fname,
+                        rel_group,
+                        abs_group,
+                        individual_id,
+                        taxon_id,
+                        scientific_name,
+                    )
+                )
+                if missing_required:
                     total_excluded += 1
                     continue
 
@@ -204,8 +220,8 @@ def main(cfg: Config) -> None:
                     ),
                     "abs_individual_img_path": str(indiv_path.resolve()),
                     "individual_id": individual_id,
-                    "taxon_id": meta.get("taxon_id"),
-                    "scientific_name": meta.get("scientific_name"),
+                    "taxon_id": taxon_id,
+                    "scientific_name": scientific_name,
                 })
                 total_written += 1
 

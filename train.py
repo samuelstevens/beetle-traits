@@ -698,7 +698,12 @@ def train(cfg: Config):
         val_run_specs.append(ValRunSpec(ds, dl, fixed_indices, seen_species))
         logger.info("%s validation: fixed indices: %s", val_cfg.key, fixed_indices)
 
-    train_cfgs = [dataclasses.replace(cfg.hawaii, split="train"), cfg.beetlepalooza]
+    train_cfgs: list[btx.data.Config] = [
+        dataclasses.replace(cfg.hawaii, split="train"),
+        cfg.beetlepalooza,
+    ]
+    if cfg.biorepo.go and cfg.biorepo.split == "train":
+        train_cfgs.append(cfg.biorepo)
     train_dss = [ds_cfg.dataset(ds_cfg) for ds_cfg in train_cfgs if ds_cfg.go]
     train_dl = make_dataloader(
         cfg, train_dss, shuffle=True, finite=False, is_train=True

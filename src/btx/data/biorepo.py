@@ -63,34 +63,34 @@ def _grouped_split(cfg: Config) -> pl.DataFrame:
     val_group_imgs = set()
     val_group_imgs.update(
         group_stats
-        .filter(pl.col("n_groups") <= 2)
+        .filter(pl.col("n_groups") < 2)
         .get_column("rel_group_img_path")
         .to_list()
     )
 
-    # For species with more groups, select up to 2 groups and 10 samples
+    # For species with more than 1 group, put exactly 1 group in val; the rest go to train.
+    # If a group is already in val (shared with a single-group species), that counts.
     for (taxon_id,) in (
-        taxon_group_counts.filter(pl.col("n_groups") > 2).select("taxon_id").iter_rows()
+        taxon_group_counts.filter(pl.col("n_groups") > 1).select("taxon_id").iter_rows()
     ):
-        taxon_groups = group_stats.filter(pl.col("taxon_id") == taxon_id).filter(
-            ~pl.col("rel_group_img_path").is_in(val_group_imgs)
+        taxon_group_imgs = set(
+            group_stats
+            .filter(pl.col("taxon_id") == taxon_id)
+            .get_column("rel_group_img_path")
+            .to_list()
         )
+        if taxon_group_imgs & val_group_imgs:
+            continue
 
-        # Take groups until we have 2 groups or 10 samples
-        total_beetles = 0
-        total_groups = 0
-        for group_img, n_beetles in (
-            taxon_groups
+        for group_img, _ in (
+            group_stats
+            .filter(pl.col("taxon_id") == taxon_id)
             .select("rel_group_img_path", "n_beetles")
             .sample(fraction=1.0, with_replacement=False, shuffle=True, seed=0)
             .iter_rows()
         ):
-            if total_groups >= 2 and total_beetles >= 20:
-                break
-
             val_group_imgs.add(group_img)
-            total_beetles += n_beetles
-            total_groups += 1
+            break
 
     # Log the split statistics
     total = len(df)
