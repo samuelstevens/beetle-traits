@@ -2,6 +2,7 @@
 
 import pathlib
 
+import numpy as np
 import pytest
 
 import btx.data
@@ -112,16 +113,17 @@ def test_biorepo_all_samples_have_split():
     not BIOREPO_UNLABELED_ANN_FPATH.is_file(),
     reason="Unlabeled BioRepo annotations CSV not available",
 )
-def test_biorepo_unlabeled_sample_has_none_annotations():
-    ds = btx.data.biorepo.Dataset(
-        btx.data.biorepo.Config(split="unlabeled")
-    )
+def test_biorepo_unlabeled_sample_has_placeholder_annotations():
+    ds = btx.data.biorepo.Dataset(btx.data.biorepo.Config(split="unlabeled"))
     assert len(ds) > 0
     sample = ds[0]
     assert sample["split"] == "unlabeled"
-    assert sample["points_px"] is None
-    assert sample["scalebar_px"] is None
-    assert sample["scalebar_valid"] is None
-    assert sample["loss_mask"] is None
+    assert sample["points_px"].shape == (2, 2, 2)
+    assert np.all(np.isnan(sample["points_px"]))
+    assert sample["scalebar_px"].shape == (2, 2)
+    assert np.all(np.isnan(sample["scalebar_px"]))
+    assert sample["scalebar_valid"] == np.bool_(False)
+    assert sample["loss_mask"].shape == (2,)
+    assert np.all(sample["loss_mask"] == 0.0)
     assert isinstance(sample["img_fpath"], str)
     assert pathlib.Path(sample["img_fpath"]).is_file()

@@ -242,8 +242,16 @@ class InitAugState(grain.transforms.Map):
         assert loss_mask.shape == (2,), (
             f"Expected loss_mask shape (2,), got {loss_mask.shape}"
         )
-        assert np.all(np.isfinite(points_px)), "points_px must be finite"
-        assert np.all(np.isfinite(scalebar_px)), "scalebar_px must be finite"
+        # Only check finiteness for active (unmasked) measurements.
+        for i in range(2):
+            if loss_mask[i] > 0:
+                assert np.all(np.isfinite(points_px[i])), (
+                    f"points_px[{i}] must be finite when loss_mask[{i}]={loss_mask[i]}"
+                )
+        if np.any(loss_mask > 0):
+            assert np.all(np.isfinite(scalebar_px)), (
+                "scalebar_px must be finite when loss_mask is active"
+            )
 
         sample["points_px"] = points_px
         sample["scalebar_px"] = scalebar_px

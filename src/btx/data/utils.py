@@ -29,13 +29,13 @@ class Dataset(grain.sources.RandomAccessDataSource, abc.ABC):
 class Sample(tp.TypedDict):
     img_fpath: str
 
-    points_px: Float[np.ndarray, "lines 2 2"] | None
+    points_px: Float[np.ndarray, "lines 2 2"]
     """{width, length} x two points x {x, y}."""
-    scalebar_px: Float[np.ndarray, "2 2"] | None
+    scalebar_px: Float[np.ndarray, "2 2"]
     """two points x {x, y}."""
-    loss_mask: Float[np.ndarray, "2"] | None
+    loss_mask: Float[np.ndarray, "2"]
     """Mask for {width, length} indicating which measurements to train on. 1.0 = train, 0.0 = skip."""
-    scalebar_valid: Bool[np.ndarray, ""] | None
+    scalebar_valid: Bool[np.ndarray, ""]
     """Whether scalebar is usable for converting pixel errors to cm."""
 
     # Metadata

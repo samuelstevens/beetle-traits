@@ -22,7 +22,7 @@ BIOREPO_ANN_FPATH = pathlib.Path(
 
 RUN_IDS = ["gxdlfrgd", "egqr97d7", "v1t5i5tq"]
 
-OUT_DPATH = pathlib.Path("docs/experiments/005-active-learning/results")
+OUT_DPATH = pathlib.Path("/fs/ess/PAS2136/samuelstevens/beetle-traits/005-active-learning/results")
 
 SLURM = {
     "slurm_acct": "PAS2136",
@@ -34,9 +34,10 @@ SLURM = {
 def make_cfgs() -> list[dict]:
     cfgs = []
     for run_id in RUN_IDS:
+        # Labeled: Hawaii (all) + BioRepo (all)
         cfgs.append({
             "ckpt_fpath": f"checkpoints/exp005/{run_id}/model.eqx",
-            "out_fpath": str(OUT_DPATH / f"{run_id}.parquet"),
+            "out_fpath": str(OUT_DPATH / f"{run_id}_labeled.parquet"),
             "hawaii": {
                 "hf_root": HAWAII_HF_ROOT,
                 "annotations": HAWAII_ANN_FPATH,
@@ -48,6 +49,19 @@ def make_cfgs() -> list[dict]:
                 "root": BIOREPO_ROOT,
                 "annotations": BIOREPO_ANN_FPATH,
                 "split": "all",
+            },
+            **SLURM,
+        })
+        # Unlabeled: BioRepo only
+        cfgs.append({
+            "ckpt_fpath": f"checkpoints/exp005/{run_id}/model.eqx",
+            "out_fpath": str(OUT_DPATH / f"{run_id}_unlabeled.parquet"),
+            "hawaii": {"go": False},
+            "beetlepalooza": {"go": False},
+            "biorepo": {
+                "root": BIOREPO_ROOT,
+                "annotations": BIOREPO_ANN_FPATH,
+                "split": "unlabeled",
             },
             **SLURM,
         })

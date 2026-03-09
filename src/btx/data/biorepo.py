@@ -210,10 +210,10 @@ class Dataset(utils.Dataset):
             group_img_basename = (row["group_img"] or "").removesuffix(".png")
             return utils.Sample(
                 img_fpath=str(fpath),
-                points_px=None,
-                scalebar_px=None,
-                scalebar_valid=None,
-                loss_mask=None,
+                points_px=np.full((2, 2, 2), np.nan),
+                scalebar_px=np.full((2, 2), np.nan),
+                scalebar_valid=np.bool_(False),
+                loss_mask=np.zeros(2),
                 beetle_id=row["individual_id"] or "",
                 beetle_position=row["beetle_position"],
                 group_img_basename=group_img_basename,

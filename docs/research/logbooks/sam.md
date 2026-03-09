@@ -253,3 +253,10 @@ I am trying to
 1. Clean up some code to minimize future tech debt.
 2. Simplify the code as much as possible to make it very hackable
 3. Get most of the complex logic done as soon as possible.
+
+# 04/09/2026
+
+- Send Aly an inference .parquet file to calculate coefficient of variance in order to update the 0.3% maximum error threshold.
+- Do a large training run
+- Document the inference.py and rank.py workflow for Nathan. Have him run a round of the pipeline.
+- Get Aly set up with the repo on OSC so she can run the whole workflow herself.
