@@ -60,16 +60,24 @@ Testing Strategy:
 Classes
 -------
 
-`Config(hf_root: pathlib.Path = PosixPath('data/hawaii'), annotations: pathlib.Path = PosixPath('data/hawaii-formatted/annotations.json'), include_polylines: bool = True, n_workers: int = 4, batch_size: int = 16, split: Literal['train', 'val'] = 'train', seed: int = 0, min_val_groups: int = 2, min_val_beetles: int = 20)`
-:   Config(hf_root: pathlib.Path = PosixPath('data/hawaii'), annotations: pathlib.Path = PosixPath('data/hawaii-formatted/annotations.json'), include_polylines: bool = True, n_workers: int = 4, batch_size: int = 16, split: Literal['train', 'val'] = 'train', seed: int = 0, min_val_groups: int = 2, min_val_beetles: int = 20)
+`Config(go: bool = True, hf_root: pathlib.Path = PosixPath('data/hawaii'), annotations: pathlib.Path = PosixPath('data/hawaii-formatted/annotations.json'), include_polylines: bool = True, split: Literal['train', 'val', 'all'] = 'train', seed: int = 0, min_val_groups: int = 2, min_val_beetles: int = 20)`
+:   Config(go: bool = True, hf_root: pathlib.Path = PosixPath('data/hawaii'), annotations: pathlib.Path = PosixPath('data/hawaii-formatted/annotations.json'), include_polylines: bool = True, split: Literal['train', 'val', 'all'] = 'train', seed: int = 0, min_val_groups: int = 2, min_val_beetles: int = 20)
+
+    ### Ancestors (in MRO)
+
+    * btx.data.utils.Config
+    * abc.ABC
 
     ### Instance variables
 
     `annotations: pathlib.Path`
     :   Path to the annotations.json file made by running format_hawaii.py.
 
-    `batch_size: int`
-    :   Batch size.
+    `dataset`
+    :
+
+    `go: bool`
+    :   Whether to include this dataset in training.
 
     `hf_root: pathlib.Path`
     :   Path to the dataset root downloaded from HuggingFace.
@@ -77,19 +85,19 @@ Classes
     `include_polylines: bool`
     :   Whether to include polylines (lines with more than 2 points).
 
+    `key: str`
+    :
+
     `min_val_beetles: int`
     :   Minimum beetles per species in validation.
 
     `min_val_groups: int`
     :   Minimum group images per species in validation.
 
-    `n_workers: int`
-    :   Number of dataloader workers.
-
     `seed: int`
     :   Random seed for split.
 
-    `split: Literal['train', 'val']`
+    `split: Literal['train', 'val', 'all']`
     :   Which split.
 
 `Dataset(cfg: btx.data.hawaii.Config)`
@@ -100,6 +108,13 @@ Classes
 
     ### Ancestors (in MRO)
 
+    * btx.data.utils.Dataset
     * grain._src.python.data_sources.RandomAccessDataSource
     * typing.Protocol
     * typing.Generic
+    * abc.ABC
+
+    ### Instance variables
+
+    `cfg: btx.data.hawaii.Config`
+    :

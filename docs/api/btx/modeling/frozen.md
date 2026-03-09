@@ -4,15 +4,12 @@ Module btx.modeling.frozen
 Classes
 -------
 
-`Frozen(img_size: int = 256, dinov3_ckpt: pathlib.Path = PosixPath('models/dinov3_vitb16.eqx'))`
-:   Frozen(img_size: int = 256, dinov3_ckpt: pathlib.Path = PosixPath('models/dinov3_vitb16.eqx'))
+`Frozen(dinov3_ckpt: pathlib.Path = PosixPath('models/dinov3_vitb16.eqx'))`
+:   Frozen(dinov3_ckpt: pathlib.Path = PosixPath('models/dinov3_vitb16.eqx'))
 
     ### Instance variables
 
     `dinov3_ckpt: pathlib.Path`
-    :
-
-    `img_size: int`
     :
 
 `Model(cfg: btx.modeling.frozen.Frozen, *, key: jax.Array)`
@@ -25,7 +22,7 @@ Classes
 
     ### Instance variables
 
-    `head: equinox.nn._linear.Linear`
+    `head: equinox.nn._mlp.MLP`
     :
 
     `vit: btx.modeling.dinov3.VisionTransformer`

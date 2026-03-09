@@ -184,6 +184,28 @@ Classes
     `indiv_img_path: str`
     :
 
+`ValidationError(error_type: Literal['trait_duplicates', 'image_duplicates', 'images_without_traits', 'traits_without_images', 'missing_files', 'corrupted_files', 'dimension_errors'], count: int, details: list[str] = <factory>)`
+:   Data validation error with type and count.
+
+    ### Instance variables
+
+    `count: int`
+    :
+
+    `details: list[str]`
+    :   Optional list of example error details for logging.
+
+    `display_name: str`
+    :   Human-readable error type name.
+
+    `error_type: Literal['trait_duplicates', 'image_duplicates', 'images_without_traits', 'traits_without_images', 'missing_files', 'corrupted_files', 'dimension_errors']`
+    :
+
+    ### Methods
+
+    `log_summary(self, logger: logging.Logger) ‑> None`
+    :   Log a summary of this error.
+
 `WorkerError(group_img_basename: str, message: str)`
 :   Base class for worker errors with context.
 

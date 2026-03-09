@@ -4,36 +4,51 @@ Module btx.data.utils
 Classes
 -------
 
-`DecodeRGB()`
-:   DecodeRGB()
+`Config()`
+:   Helper class that provides a standard way to create an ABC using
+    inheritance.
 
     ### Ancestors (in MRO)
 
-    * grain._src.core.transforms.MapTransform
     * abc.ABC
 
-    ### Methods
+    ### Descendants
 
-    `map(self, sample: btx.data.utils.Sample) ‑> btx.data.utils.Sample`
-    :
-
-`Resize(size: int = 256)`
-:   Resize(size: int = 256)
-
-    ### Ancestors (in MRO)
-
-    * grain._src.core.transforms.MapTransform
-    * abc.ABC
+    * btx.data.beetlepalooza.Config
+    * btx.data.biorepo.Config
+    * btx.data.hawaii.Config
 
     ### Instance variables
 
-    `size: int`
+    `dataset: type['Dataset']`
     :
 
-    ### Methods
+    `key: str`
+    :
 
-    `map(self, sample: dict[str, object]) ‑> dict[str, object]`
-    :   Maps a single element.
+`Dataset(*args, **kwargs)`
+:   Interface for datasources where storage supports efficient random access.
+    
+    Note that `__repr__` has to be additionally implemented to make checkpointing
+    work with this source.
+
+    ### Ancestors (in MRO)
+
+    * grain._src.python.data_sources.RandomAccessDataSource
+    * typing.Protocol
+    * typing.Generic
+    * abc.ABC
+
+    ### Descendants
+
+    * btx.data.beetlepalooza.Dataset
+    * btx.data.biorepo.Dataset
+    * btx.data.hawaii.Dataset
+
+    ### Instance variables
+
+    `cfg: btx.data.utils.Config`
+    :
 
 `Sample(*args, **kwargs)`
 :   dict() -> new empty dictionary
@@ -64,8 +79,20 @@ Classes
     `img_fpath: str`
     :
 
+    `loss_mask: jaxtyping.Float[ndarray, '2']`
+    :   Mask for {width, length} indicating which measurements to train on. 1.0 = train, 0.0 = skip.
+
     `points_px: jaxtyping.Float[ndarray, 'lines 2 2']`
     :   {width, length} x two points x {x, y}.
 
     `scalebar_px: jaxtyping.Float[ndarray, '2 2']`
     :   two points x {x, y}.
+
+    `scalebar_valid: jaxtyping.Bool[ndarray, '']`
+    :   Whether scalebar is usable for converting pixel errors to cm.
+
+    `scientific_name: str`
+    :
+
+    `split: str`
+    :

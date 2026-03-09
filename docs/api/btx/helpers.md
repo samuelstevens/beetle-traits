@@ -43,6 +43,12 @@ Functions
     Returns:
         int: The maximum number of jobs that can be submitted at once. Returns 1000 as fallback.
 
+`is_device_array(x: object) ‑> bool`
+:   Check whether an object is a numeric array suitable for `jax.device_put`.
+
+`to_device(batch: dict[str, object], device=None) ‑> tuple[dict, dict]`
+:   Split a batch dict into numeric arrays (sent to device) and metadata (strings, etc).
+
 Classes
 -------
 
