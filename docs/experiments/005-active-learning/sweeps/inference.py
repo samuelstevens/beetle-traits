@@ -22,7 +22,9 @@ BIOREPO_ANN_FPATH = pathlib.Path(
 
 RUN_IDS = ["gxdlfrgd", "egqr97d7", "v1t5i5tq"]
 
-OUT_DPATH = pathlib.Path("/fs/ess/PAS2136/samuelstevens/beetle-traits/005-active-learning/results")
+OUT_DPATH = pathlib.Path(
+    "/fs/ess/PAS2136/samuelstevens/beetle-traits/005-active-learning/results"
+)
 
 SLURM = {
     "slurm_acct": "PAS2136",

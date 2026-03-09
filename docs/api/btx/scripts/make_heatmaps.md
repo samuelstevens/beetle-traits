@@ -13,7 +13,7 @@ Functions
 `load_and_preprocess(img_fpath: str) ‑> tuple[numpy.ndarray, numpy.ndarray]`
 :   Load image, resize to 256x256. Returns (display_hwc, normalized_hwc).
 
-`main(cfg: Annotated[btx.scripts.make_heatmaps.Config, _ArgConfig(name='', metavar=None, help=None, help_behavior_hint=None, aliases=None, prefix_name=None, constructor_factory=None, default=<NonpropagatingMissingType id='22484197865904'>)], sweep: pathlib.Path | None = None)`
+`main(cfg: Annotated[btx.scripts.make_heatmaps.Config, _ArgConfig(name='', metavar=None, help=None, help_behavior_hint=None, aliases=None, prefix_name=None, constructor_factory=None, default=<NonpropagatingMissingType id='22655104059920'>)], sweep: pathlib.Path | None = None)`
 :   
 
 `run(cfg: btx.scripts.make_heatmaps.Config)`

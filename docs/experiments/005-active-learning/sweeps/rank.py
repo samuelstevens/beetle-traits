@@ -6,7 +6,9 @@ Run with:
 
 import pathlib
 
-RESULTS_DPATH = pathlib.Path("/fs/ess/PAS2136/samuelstevens/beetle-traits/005-active-learning/results")
+RESULTS_DPATH = pathlib.Path(
+    "/fs/ess/PAS2136/samuelstevens/beetle-traits/005-active-learning/results"
+)
 
 
 SHARED = {

@@ -20,11 +20,14 @@ BEETLEPALOOZA_HF_ROOT = pathlib.Path(
 )
 BEETLEPALOOZA_ANN_FPATH = pathlib.Path("data/beetlepalooza-formatted/annotations.json")
 BIOREP_HF_ROOT = pathlib.Path("/fs/scratch/PAS2136/cain429/Subset-Exp")
-BIOREP_ANN_FPATH = pathlib.Path("/fs/scratch/PAS2136/cain429/biorepo-formatted/annotations.json")
+BIOREP_ANN_FPATH = pathlib.Path(
+    "/fs/scratch/PAS2136/cain429/biorepo-formatted/annotations.json"
+)
 
 DINO_CKPT_FPATH = pathlib.Path(
     "/fs/ess/PAS2136/samuelstevens/models/dinov3-jax/dinov3_vits16.eqx"
 )
+
 
 def _base_aug_cfg() -> dict:
     """Standard augmentation configuration."""
@@ -71,12 +74,10 @@ def _make_run(
             "annotations": BEETLEPALOOZA_ANN_FPATH,
             "include_polylines": False,
         },
-        "biorepo" : {
+        "biorepo": {
             "root": BIOREP_HF_ROOT,
             "annotations": BIOREP_ANN_FPATH,
         },
-
-
         "aug_hawaii": {"go": True, "normalize": True, "crop": False},
         "aug_beetlepalooza": {"go": True, "normalize": True, "crop": False},
         "aug_biorepo": {"go": True, "normalize": True, "crop": False},
@@ -86,14 +87,22 @@ def _make_run(
 def make_cfgs() -> list[dict]:
     cfgs: list[dict] = []
     lr_specs = [
-        1e-5, 3e-5, 1e-4, 3e-4, 1e-3, 3e-3, 1e-2, 3e-1, 1e-1,
+        1e-5,
+        3e-5,
+        1e-4,
+        3e-4,
+        1e-3,
+        3e-3,
+        1e-2,
+        3e-1,
+        1e-1,
     ]
 
     schedule_configs = [
         ("cosine", 4_000, 76_000, "cosine"),
         ("wsd", 4_000, 0, "wsd-no-decay"),
         ("wsd", 4_000, 8_000, "wsd"),
-        ("none", 0, 0, "none")
+        ("none", 0, 0, "none"),
     ]
 
     # Generate all combinations
