@@ -73,7 +73,8 @@ def clean_toras_path(toras_path: str) -> str:
     Strips leading slash, removes Windows duplicate-file suffixes like ' (1)',
     and converts .jpg to .png.
     """
-    path = toras_path.lstrip("/")
+    # Take only the filename, discarding any leading directory components (e.g. "round1_groups/").
+    path = pathlib.Path(toras_path).name
     # Remove " (N)" before the extension, e.g. "img (1).jpg" -> "img.jpg"
     path = re.sub(r" \(\d+\)(?=\.)", "", path)
     return path.replace(".jpg", ".png")
@@ -108,9 +109,8 @@ class Config:
     new_group_images: list[str] = dataclasses.field(default_factory=list)
     """List of new group image filenames to process (e.g. img1.png img2.png)."""
 
-    existing_annotations_fpath: pathlib.Path = pathlib.Path(
-        "/fs/scratch/PAS2136/cain429/biorepo-formatted/annotations.json"
-    )
+    existing_annotations_fpath: pathlib.Path | None = None
+    """Path to existing annotations.json to append to. If None, starts fresh."""
 
     viz_output_dpath: pathlib.Path = pathlib.Path(
         "/fs/scratch/PAS2136/cain429/biorepo-formatted/template_match"
@@ -133,10 +133,10 @@ class Config:
     log_to: pathlib.Path = pathlib.Path("./logs")
     """Where to save submitit/slurm logs."""
 
-    n_hours: float = 2.0
+    n_hours: float = 1.0
     """Number of hours to request for each job."""
 
-    groups_per_job: int = 4
+    groups_per_job: int = 8
     """Number of group images to process per job."""
 
     # Visualization settings
@@ -342,9 +342,19 @@ def create_new_measurements_annotations(
                 scientific_name = metadata_row["scientificName"][0]
                 individual_id = metadata_row["individualID"][0]
 
-            length_row = image_df.filter(pl.col("Entity") == entity_num)[0]
-            width_row = image_df.filter(pl.col("Entity") == entity_num + 1)[0]
-            pronotum_row = image_df.filter(pl.col("Entity") == entity_num + 2)[0]
+            length_df = image_df.filter(pl.col("Entity") == entity_num)
+            width_df = image_df.filter(pl.col("Entity") == entity_num + 1)
+            pronotum_df = image_df.filter(pl.col("Entity") == entity_num + 2)
+            if length_df.is_empty() or width_df.is_empty() or pronotum_df.is_empty():
+                logger.warning(
+                    "Missing measurements for %s beetle %d, skipping",
+                    group_img_name,
+                    beetle_num,
+                )
+                continue
+            length_row = length_df[0]
+            width_row = width_df[0]
+            pronotum_row = pronotum_df[0]
 
             group_stem = group_img_name.replace(".png", "")
             individual_filename = f"{group_stem}_{beetle_num}.png"
@@ -634,7 +644,10 @@ def main(cfg: Config) -> int:
         except Exception as e:
             logger.error("Job %d/%d failed: %s", job_idx + 1, len(all_jobs), e)
 
-    combined_df = pl.concat(all_match_dfs) if all_match_dfs else pl.DataFrame()
+    assert all_match_dfs, (
+        f"No template match results collected for {len(new_group_images)} new images. Check job logs for errors (missing group images, individual directories, or failed template matching)."
+    )
+    combined_df = pl.concat(all_match_dfs)
 
     successful, failed, _ = execute_renames(all_rename_ops)
     logger.info("Renames: %d successful, %d failed", successful, failed)

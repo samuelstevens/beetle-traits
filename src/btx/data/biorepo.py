@@ -24,6 +24,9 @@ class Config(utils.Config):
     unlabeled_annotations: pathlib.Path = pathlib.Path(
         "/fs/scratch/PAS2136/cain429/unlabeled_biorepo_annotations.csv"
     )
+    training_annotations: pathlib.Path = pathlib.Path(
+        "/fs/scratch/PAS2136/cain429/active_learning_round1/round1/annotations.json"
+    )
 
     split: tp.Literal["train", "val", "test", "all", "unlabeled"] = "val"
     """Which split."""
@@ -92,32 +95,65 @@ def _grouped_split(cfg: Config) -> pl.DataFrame:
             val_group_imgs.add(group_img)
             break
 
-    # Log the split statistics
-    total = len(df)
-    val_df = df.filter(pl.col("rel_group_img_path").is_in(val_group_imgs))
-    val_total = len(val_df)
+    # Build split table (each beetle inherits its group's split)
+    return df.with_columns(
+        pl
+        .when(pl.col("rel_group_img_path").is_in(val_group_imgs))
+        .then(pl.lit("val"))
+        .otherwise(pl.lit("train"))
+        .alias("split"),
+        pl
+        .col("rel_group_img_path")
+        .str.strip_prefix("Images/")
+        .str.strip_suffix(".png")
+        .alias("group_img_basename"),
+    )
 
-    # Get per-taxon statistics
+
+@beartype.beartype
+def _just_training_split(cfg: Config) -> pl.DataFrame:
+    """
+    Formats annotations which go straight to training.
+
+    These come from the active learning rounds, and are appended to the group aware split.
+    """
+    df = pl.read_json(cfg.training_annotations)
+    if df.is_empty():
+        return df
+    return df.with_columns(
+        pl.lit("train").alias("split"),
+        pl
+        .col("rel_group_img_path")
+        .str.split("/")
+        .list.last()
+        .str.strip_suffix(".png")
+        .alias("group_img_basename"),
+    )
+
+
+@beartype.beartype
+def _log_split_stats(df: pl.DataFrame) -> None:
+    """Log per-taxon train/val split statistics for the combined biorepo dataframe."""
+    total = len(df)
+    val_df = df.filter(pl.col("split") == "val")
+    val_total = len(val_df)
+    logger.info(
+        f"BioRepo: {total} total, Train: {total - val_total}, Val: {val_total} ({100 * val_total / total:.1f}%)"
+    )
+
     val_stats = val_df.group_by("taxon_id").agg([
         pl.len().alias("val_samples"),
         pl.col("rel_group_img_path").n_unique().alias("val_groups"),
     ])
-
-    # Join with totals
     taxon_totals = df.group_by("taxon_id").agg([
         pl.len().alias("total_samples"),
         pl.col("rel_group_img_path").n_unique().alias("total_groups"),
     ])
-
     split_stats = taxon_totals.join(val_stats, on="taxon_id", how="left").fill_null(0)
 
     # Thresholds for per-species reporting (from issue #8)
     min_groups = 2
     min_beetles = 20
-
-    logger.info(
-        f"Total samples: {total}, Val: {val_total} ({100 * val_total / total:.1f}%)"
-    )
 
     below_threshold_species = []
     for row in split_stats.sort("taxon_id").iter_rows(named=True):
@@ -130,7 +166,6 @@ def _grouped_split(cfg: Config) -> pl.DataFrame:
         split_type = "ALL VAL" if val_groups_count == total_groups else "MIXED"
         pct = 100 * val_count / total_count if total_count > 0 else 0
 
-        # Check if species is below threshold for reliable per-species reporting
         below_threshold = val_groups_count < min_groups or val_count < min_beetles
         flag = " [BELOW THRESHOLD]" if below_threshold else ""
         if below_threshold:
@@ -148,20 +183,6 @@ def _grouped_split(cfg: Config) -> pl.DataFrame:
             "These species are included in aggregate metrics but may have unreliable per-species results."
         )
 
-    # Build split table (each beetle inherits its group's split)
-    return df.with_columns(
-        pl
-        .when(pl.col("rel_group_img_path").is_in(val_group_imgs))
-        .then(pl.lit("val"))
-        .otherwise(pl.lit("train"))
-        .alias("split"),
-        pl
-        .col("rel_group_img_path")
-        .str.strip_prefix("Images/")
-        .str.strip_suffix(".png")
-        .alias("group_img_basename"),
-    )
-
 
 @beartype.beartype
 class Dataset(utils.Dataset):
@@ -173,6 +194,10 @@ class Dataset(utils.Dataset):
             self.df = pl.read_csv(cfg.unlabeled_annotations)
         else:
             df = _grouped_split(cfg)
+            train_df = _just_training_split(cfg)
+            if not train_df.is_empty():
+                df = pl.concat([df, train_df])
+            _log_split_stats(df)
             self.df = (
                 df if cfg.split == "all" else df.filter(pl.col("split") == cfg.split)
             )
