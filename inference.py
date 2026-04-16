@@ -43,6 +43,9 @@ SCHEMA = pl.Schema({
     # Ground truth trait lengths in cm (NaN when scalebar/mask invalid)
     "gt_width_cm": pl.Float32,
     "gt_length_cm": pl.Float32,
+    # Predicted trait lengths in cm (NaN when scalebar invalid)
+    "pred_width_cm": pl.Float32,
+    "pred_length_cm": pl.Float32,
     # Heatmap diagnostics
     "mean_entropy": pl.Float32,
     # Coordinates: flat [w0_x, w0_y, w1_x, w1_y, l0_x, l0_y, l1_x, l1_y]
@@ -103,6 +106,8 @@ class InferAux(eqx.Module):
     length_line_err_cm: Float[Array, " batch"]
     gt_width_cm: Float[Array, " batch"]
     gt_length_cm: Float[Array, " batch"]
+    pred_width_cm: Float[Array, " batch"]
+    pred_length_cm: Float[Array, " batch"]
 
 
 @eqx.filter_jit()
@@ -154,6 +159,9 @@ def forward_batch(
     )
     line_err_cm = jnp.abs(pred_line_len - tgt_line_len) / px_per_cm[:, None]
     line_err_cm = jnp.where(metric_mask_line > 0, line_err_cm, jnp.nan)
+    pred_line_cm = jnp.where(
+        scalebar_valid[:, None], pred_line_len / px_per_cm[:, None], jnp.nan
+    )
 
     # Per-sample heatmap CE loss (reuse objective code for consistency with training).
     heatmap_tgt = jax.vmap(
@@ -177,6 +185,8 @@ def forward_batch(
         length_line_err_cm=line_err_cm[:, 1],
         gt_width_cm=tgt_line_cm[:, 0],
         gt_length_cm=tgt_line_cm[:, 1],
+        pred_width_cm=pred_line_cm[:, 0],
+        pred_length_cm=pred_line_cm[:, 1],
     )
 
 
@@ -198,6 +208,8 @@ def batch_to_rows(aux: InferAux, metadata: dict, dataset_key: str) -> list[dict]
             "length_line_err_cm": float(aux.length_line_err_cm[i]),
             "gt_width_cm": float(aux.gt_width_cm[i]),
             "gt_length_cm": float(aux.gt_length_cm[i]),
+            "pred_width_cm": float(aux.pred_width_cm[i]),
+            "pred_length_cm": float(aux.pred_length_cm[i]),
             "mean_entropy": float(aux.mean_entropy[i]),
             "pred_coords_px": np.asarray(aux.pred_coords_px[i]).reshape(8).tolist(),
             "gt_coords_px": np.asarray(aux.gt_coords_px[i]).reshape(8).tolist(),

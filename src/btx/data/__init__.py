@@ -2,6 +2,7 @@ import typing as tp
 
 import beartype
 import grain
+import numpy as np
 
 from . import transforms
 from .beetlepalooza import Config as BeetlePaloozaConfig
@@ -10,6 +11,10 @@ from .biorepo import Config as BioRepoConfig
 from .biorepo import Dataset as BioRepoDataset
 from .hawaii import Config as HawaiiConfig
 from .hawaii import Dataset as HawaiiDataset
+from .scalebar import Config as ScalebarGroupConfig
+from .scalebar import Dataset as ScalebarGroupDataset
+from .scalebar_clip import Config as ScalebarClipConfig
+from .scalebar_clip import Dataset as ScalebarClipDataset
 from .transforms import AugmentConfig
 from .utils import Config, Dataset
 
@@ -23,6 +28,10 @@ __all__ = [
     "HawaiiDataset",
     "BeetlePaloozaConfig",
     "BeetlePaloozaDataset",
+    "ScalebarGroupConfig",
+    "ScalebarGroupDataset",
+    "ScalebarClipConfig",
+    "ScalebarClipDataset",
     "make_dataloader",
 ]
 
@@ -38,6 +47,7 @@ def make_dataloader(
     shuffle: bool,
     finite: bool,
     is_train: bool,
+    img_caches: list[dict[str, np.ndarray]] | None = None,
 ):
     """Build a mixed Grain dataloader from one or more dataset sources.
 
@@ -57,19 +67,25 @@ def make_dataloader(
 
     msg = f"Expected matching lengths: {len(dss)} datasets, {len(aug_cfgs)} aug configs"
     assert len(dss) == len(aug_cfgs), msg
+    assert img_caches is None or len(img_caches) == len(dss), (
+        f"Expected img_caches length {len(dss)}, got {len(img_caches) if img_caches else 0}"
+    )
 
     datasets = []
     weights = []
 
-    for ds, aug_cfg in zip(dss, aug_cfgs):
+    for i, (ds, aug_cfg) in enumerate(zip(dss, aug_cfgs)):
         source = tp.cast(tp.Sequence[object], ds)
         mapped_ds = grain.MapDataset.source(source).seed(seed)
         if shuffle:
             mapped_ds = mapped_ds.shuffle()
 
-        for i, tfm in enumerate(transforms.make_transforms(aug_cfg, is_train=is_train)):
+        cache = img_caches[i] if img_caches else None
+        for j, tfm in enumerate(
+            transforms.make_transforms(aug_cfg, is_train=is_train, img_cache=cache)
+        ):
             if isinstance(tfm, grain.transforms.RandomMap):
-                mapped_ds = mapped_ds.random_map(tfm, seed=seed + i)
+                mapped_ds = mapped_ds.random_map(tfm, seed=seed + j)
             else:
                 mapped_ds = mapped_ds.map(tfm)
 

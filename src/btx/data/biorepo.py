@@ -233,11 +233,24 @@ class Dataset(utils.Dataset):
             fpath = pathlib.Path(row["abs_individual_img_path"])
             assert fpath.is_file(), f"Image not found: {fpath}"
             group_img_basename = (row["group_img"] or "").removesuffix(".png")
+            # Use scalebar endpoints if the CSV was enriched by add_scalebar_to_unlabeled.py.
+            x0 = row.get("scalebar_x0")
+            scalebar_valid = x0 is not None and x0 == x0  # NaN check
+            if scalebar_valid:
+                scalebar_px = np.array(
+                    [
+                        [row["scalebar_x0"], row["scalebar_y0"]],
+                        [row["scalebar_x1"], row["scalebar_y1"]],
+                    ],
+                    dtype=np.float64,
+                )
+            else:
+                scalebar_px = np.full((2, 2), np.nan)
             return utils.Sample(
                 img_fpath=str(fpath),
                 points_px=np.full((2, 2, 2), np.nan),
-                scalebar_px=np.full((2, 2), np.nan),
-                scalebar_valid=np.bool_(False),
+                scalebar_px=scalebar_px,
+                scalebar_valid=np.bool_(scalebar_valid),
                 loss_mask=np.zeros(2),
                 beetle_id=row["individual_id"] or "",
                 beetle_position=row["beetle_position"],

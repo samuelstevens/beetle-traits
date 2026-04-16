@@ -18,7 +18,7 @@ class AugmentConfig:
     go: bool = True
     """Whether to enable the augmentation pipeline."""
     size: int = 256
-    """Output image side length in pixels. Fixed to 256 for this experiment."""
+    """Output image side length in pixels. Must be divisible by the ViT patch size (16). Must be kept in sync with modeling.heatmap.Heatmap(heatmap_size=size//4) and objectives.Heatmap(image_size=size, heatmap_size=size//4)."""
     crop: bool = True
     """Whether to use RandomResizedCrop (True) or plain Resize (False) during training. Set to False for tightly-cropped datasets where random cropping would lose too much content."""
 
@@ -57,20 +57,28 @@ class AugmentConfig:
     """Minimum valid scalebar length in pixels for cm metrics."""
 
     def __post_init__(self):
-        msg = f"Expected fixed size 256 for experiment, got {self.size}"
-        assert self.size == 256, msg
-        msg = f"Expected color_jitter_prob in [0, 1], got {self.color_jitter_prob}"
-        assert 0.0 <= self.color_jitter_prob <= 1.0, msg
+        assert self.size % 16 == 0, (
+            f"size must be divisible by ViT patch size 16, got {self.size}"
+        )
+        assert 0.0 <= self.color_jitter_prob <= 1.0, (
+            f"Expected color_jitter_prob in [0, 1], got {self.color_jitter_prob}"
+        )
 
 
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
 class DecodeRGB(grain.transforms.Map):
+    cache: dict[str, np.ndarray] = dataclasses.field(default_factory=dict)
+
     def map(self, element: object) -> object:
         sample = _sample_dct(element)
         img_fpath = sample["img_fpath"]
-        msg = f"Expected string image path, got {type(img_fpath)}"
-        assert isinstance(img_fpath, str), msg
+        assert isinstance(img_fpath, str), (
+            f"Expected string image path, got {type(img_fpath)}"
+        )
+        if img_fpath in self.cache:
+            sample["img"] = self.cache[img_fpath]
+            return sample
         # Heavy I/O lives in a transform so workers can parallelize it.
         with Image.open(img_fpath) as im:
             sample["img"] = im.convert("RGB")
@@ -514,6 +522,7 @@ def make_transforms(
     cfg: AugmentConfig,
     *,
     is_train: bool,
+    img_cache: dict[str, np.ndarray] | None = None,
 ) -> list[grain.transforms.Map | grain.transforms.RandomMap]:
     """Build the Grain transform list for train or eval.
 
@@ -528,7 +537,7 @@ def make_transforms(
     """
 
     tfms: list[grain.transforms.Map | grain.transforms.RandomMap] = [
-        DecodeRGB(),
+        DecodeRGB(cache=img_cache or {}),
         InitAugState(size=cfg.size, min_px_per_cm=cfg.min_px_per_cm),
     ]
     if not is_train or not cfg.go:

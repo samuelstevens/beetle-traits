@@ -53,18 +53,16 @@ class Config:
     carb_dir: pathlib.Path = pathlib.Path("/fs/ess/PAS2136/CarabidImaging")
     """Root of the CarabidImaging dataset."""
 
-    dump_to: pathlib.Path = pathlib.Path("./data/unlabeled-biorepo")
-    """Where to save annotations.csv."""
-
-    labeled_annotations: pathlib.Path | None = pathlib.Path(
-        "/fs/scratch/PAS2136/cain429/biorepo-formatted/annotations.json"
-    )
+    labeled_annotations: pathlib.Path | None = None
+    #pathlib.Path(
+    #    "/fs/scratch/PAS2136/cain429/biorepo-formatted/annotations.json"
+    #)
     """Path to labeled annotations JSON. If provided, beetles whose individual_id
     appears in the labeled data are excluded from the output CSV."""
 
     @property
     def images_dir(self) -> pathlib.Path:
-        return self.carb_dir / "Images" / "FinalImages"
+        return self.carb_dir / "Output" / "plotted_trays"
 
     @property
     def cropped_dir(self) -> pathlib.Path:
@@ -74,23 +72,17 @@ class Config:
     def metadata_csv(self) -> pathlib.Path:
         return self.carb_dir / "allIndividuals.csv"
 
-    @property
-    def annotations_fpath(self) -> pathlib.Path:
-        return (
-            pathlib.Path("/fs/scratch/PAS2136/cain429")
-            / "unlabeled_biorepo_annotations.csv"
-        )
+    
+    annotations_fpath: pathlib.Path = pathlib.Path(
+        "/fs/scratch/PAS2136/cain429/unlabeled_biorepo_annotations.csv")
 
 
 @beartype.beartype
 def build_image_index(cfg: Config) -> dict[str, pathlib.Path]:
     """Return a mapping of group image stem -> absolute path by scanning images_dir."""
     index: dict[str, pathlib.Path] = {}
-    for sub in cfg.images_dir.iterdir():
-        if not sub.is_dir():
-            continue
-        for f in sub.glob("*.png"):
-            index[f.stem] = f
+    for f in cfg.images_dir.glob("*.png"):
+        index[f.stem] = f
     logger.info("Indexed %d group images under %s", len(index), cfg.images_dir)
     return index
 
@@ -138,7 +130,6 @@ def load_labeled_exclusions(labeled_fpath: pathlib.Path) -> set[str]:
 @beartype.beartype
 def main(cfg: Config) -> None:
     logging.basicConfig(level=logging.INFO, format=log_format)
-    cfg.dump_to.mkdir(parents=True, exist_ok=True)
 
     logger.info("=" * 80)
     logger.info("FORMAT UNLABELED BIOREPO V2 (no template matching)")
@@ -158,11 +149,9 @@ def main(cfg: Config) -> None:
     total_written = 0
     total_excluded = 0
 
-    write_header = not cfg.annotations_fpath.exists()
-    with cfg.annotations_fpath.open("a", newline="", encoding="utf-8") as fd:
+    with cfg.annotations_fpath.open("w", newline="", encoding="utf-8") as fd:
         writer = csv.DictWriter(fd, fieldnames=_ANN_COLS)
-        if write_header:
-            writer.writeheader()
+        writer.writeheader()
 
         for group_dir in group_dirs:
             group_stem = group_dir.name

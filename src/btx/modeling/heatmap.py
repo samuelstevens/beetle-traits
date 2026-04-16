@@ -17,7 +17,9 @@ from . import dinov3
 class Heatmap:
     """Configuration for the frozen-DINOv3 + deconvolution heatmap model."""
 
-    dinov3_ckpt: pathlib.Path = pathlib.Path("models/dinov3_vitb16.eqx")
+    dinov3_ckpt: pathlib.Path = pathlib.Path(
+        "/fs/ess/PAS2136/samuelstevens/models/dinov3-jax/dinov3_vits16.eqx"
+    )
     """Path to serialized DINOv3 Equinox checkpoint."""
     heatmap_size: int = 64
     """Output heatmap side length in pixels."""
@@ -27,6 +29,8 @@ class Heatmap:
     """Output channels for the first transpose-convolution block."""
     deconv2_channels: int = 128
     """Output channels for the second transpose-convolution block."""
+    deconv3_channels: int = 0
+    """Output channels for the optional third transpose-convolution block (0 = disabled)."""
     groupnorm_groups: int = 32
     """Number of groups for GroupNorm in each decoder block."""
 
@@ -47,6 +51,12 @@ class Heatmap:
         )
         assert self.deconv1_channels % self.groupnorm_groups == 0, msg
         assert self.deconv2_channels % self.groupnorm_groups == 0, msg
+        if self.deconv3_channels > 0:
+            msg = (
+                "Expected GroupNorm groups to divide deconv3_channels, got "
+                f"groups={self.groupnorm_groups}, deconv3={self.deconv3_channels}"
+            )
+            assert self.deconv3_channels % self.groupnorm_groups == 0, msg
 
 
 @jaxtyped(typechecker=beartype.beartype)
@@ -63,6 +73,10 @@ class Model(eqx.Module):
     """Second upsampling block (`deconv1_channels -> deconv2_channels`, stride 2)."""
     gn2: eqx.nn.GroupNorm
     """GroupNorm after second upsampling block."""
+    deconv3: eqx.nn.ConvTranspose2d | None
+    """Optional third upsampling block (`deconv2_channels -> deconv3_channels`, stride 2)."""
+    gn3: eqx.nn.GroupNorm | None
+    """GroupNorm after optional third upsampling block."""
     out_conv: eqx.nn.Conv2d
     """Final `1x1` projection from decoder channels to endpoint heatmaps."""
     heatmap_size: int
@@ -75,7 +89,7 @@ class Model(eqx.Module):
             cfg: Heatmap model configuration.
             key: JAX PRNG key used to initialize decoder layers.
         """
-        k1, k2, k3 = jax.random.split(key, 3)
+        k1, k2, k3, k4 = jax.random.split(key, 4)
         self.vit = dinov3.load(cfg.dinov3_ckpt)
         d_model = self.vit.cfg.embed_dim
 
@@ -101,13 +115,30 @@ class Model(eqx.Module):
         self.gn2 = eqx.nn.GroupNorm(
             groups=cfg.groupnorm_groups, channels=cfg.deconv2_channels
         )
+        if cfg.deconv3_channels > 0:
+            self.deconv3 = eqx.nn.ConvTranspose2d(
+                in_channels=cfg.deconv2_channels,
+                out_channels=cfg.deconv3_channels,
+                kernel_size=4,
+                stride=2,
+                padding=1,
+                key=k3,
+            )
+            self.gn3 = eqx.nn.GroupNorm(
+                groups=cfg.groupnorm_groups, channels=cfg.deconv3_channels
+            )
+            last_channels = cfg.deconv3_channels
+        else:
+            self.deconv3 = None
+            self.gn3 = None
+            last_channels = cfg.deconv2_channels
         self.out_conv = eqx.nn.Conv2d(
-            in_channels=cfg.deconv2_channels,
+            in_channels=last_channels,
             out_channels=cfg.out_channels,
             kernel_size=1,
             stride=1,
             padding=0,
-            key=k3,
+            key=k4,
         )
         self.heatmap_size = cfg.heatmap_size
 
@@ -136,7 +167,8 @@ class Model(eqx.Module):
 
         x_chw = einops.rearrange(x_hwc, "h w c -> c h w")
         vit_out = self.vit(x_chw)
-        patch_nd = vit_out["patches"]
+        # stop_gradient frees ViT intermediate activations; ViT is frozen so no gradient needed.
+        patch_nd = jax.lax.stop_gradient(vit_out["patches"])
         msg = f"Expected patch tokens shape (N, D), got {patch_nd.shape}"
         assert patch_nd.ndim == 2, msg
 
@@ -157,6 +189,9 @@ class Model(eqx.Module):
         x = jnn.relu(self.gn1(x))
         x = self.deconv2(x)
         x = jnn.relu(self.gn2(x))
+        if self.deconv3 is not None:
+            x = self.deconv3(x)
+            x = jnn.relu(self.gn3(x))
         logits_chw = self.out_conv(x)
 
         msg = (
@@ -192,7 +227,7 @@ class Model(eqx.Module):
         x_chw = einops.rearrange(x_hwc, "h w c -> c h w")
         vit_out = self.vit(x_chw)
         cls_d = vit_out["cls"]
-        patch_nd = vit_out["patches"]
+        patch_nd = jax.lax.stop_gradient(vit_out["patches"])
 
         grid_h = h_img // patch_size
         grid_w = w_img // patch_size
@@ -201,6 +236,9 @@ class Model(eqx.Module):
         x = jnn.relu(self.gn1(x))
         x = self.deconv2(x)
         x = jnn.relu(self.gn2(x))
+        if self.deconv3 is not None:
+            x = self.deconv3(x)
+            x = jnn.relu(self.gn3(x))
         logits_chw = self.out_conv(x)
 
         return logits_chw, cls_d
